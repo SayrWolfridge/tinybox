@@ -71,6 +71,12 @@ jobs:
           set -euo pipefail
           cargo fmt --all -- --check 2>&1 | tee ../evidence/fmt.log
           cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee ../evidence/clippy.log
+      - name: Focused dynamic module Rust homes regression
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo test --locked -p tinybox-module --test rust_homes_manifest_e2e -- --nocapture --test-threads=1 2>&1 | tee ../evidence/rust-homes-manifest.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' ../evidence/rust-homes-manifest.log
       - name: Canonical build and tests
         working-directory: source
         run: |
@@ -78,12 +84,10 @@ jobs:
           cargo build --all-targets --all-features 2>&1 | tee ../evidence/build.log
           cargo test --all-features 2>&1 | tee ../evidence/test.log
           grep -Eq 'test result: ok\. [1-9][0-9]* passed;' ../evidence/test.log
-      - name: Actual dynamic module Rust homes flow
+      - name: Canonical module package E2E
         working-directory: source
         run: |
           set -euo pipefail
-          cargo test --locked -p tinybox-module --test rust_homes_manifest_e2e -- --nocapture --test-threads=1 2>&1 | tee ../evidence/rust-homes-manifest.log
-          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' ../evidence/rust-homes-manifest.log
           bash scripts/test-e2e.sh 2>&1 | tee ../evidence/module-package-e2e.log
       - name: Verify exact source after execution
         working-directory: source

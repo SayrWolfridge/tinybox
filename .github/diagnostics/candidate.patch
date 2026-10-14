@@ -1533,10 +1533,10 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..a886af6f7b6c53f506cafb786d7abd22b2d11347
+index 0000000000000000000000000000000000000000..c49c59308b06981d9223c60fa7338c2fa15e312c
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,741 @@
+@@ -0,0 +1,743 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -2097,8 +2097,9 @@ index 0000000000000000000000000000000000000000..a886af6f7b6c53f506cafb786d7abd22
 +cat "$CARGO_HOME/env" >/dev/null || exit 32
 +cat "$CARGO_HOME/registry/cache-fixture" >/dev/null || exit 33
 +cat "$CARGO_HOME/git/cache-fixture" >/dev/null || exit 34
-+"$CARGO_HOME/bin/cargo" --version || exit 35
-+"$CARGO_HOME/bin/rustc" --version || exit 36
++export PATH="$CARGO_HOME/bin:${PATH:-}"
++cargo --version || exit 35
++rustc --version || exit 36
 +if printf denied > "$RUSTUP_HOME/.tinybox-write-probe" 2>/dev/null; then exit 41; fi
 +if printf denied > "$CARGO_HOME/config.toml" 2>/dev/null; then exit 42; fi
 +if printf denied > "$CARGO_HOME/registry/write-probe" 2>/dev/null; then exit 43; fi
@@ -2201,16 +2202,17 @@ index 0000000000000000000000000000000000000000..a886af6f7b6c53f506cafb786d7abd22
 +        }
 +    })
 +    .await??;
++    let stderr: Vec<_> = batch
++        .chunks
++        .iter()
++        .filter(|chunk| chunk.stream == tinybox_bus::OutputStream::Stderr)
++        .flat_map(|chunk| chunk.bytes.iter().copied())
++        .collect();
 +    assert_eq!(
 +        batch.state,
 +        tinybox_bus::ExecutionState::Exited { exit_code: 0 },
-+        "native shell exited with stderr {:?}",
-+        batch
-+            .chunks
-+            .iter()
-+            .filter(|chunk| chunk.stream == tinybox_bus::OutputStream::Stderr)
-+            .flat_map(|chunk| chunk.bytes.iter().copied())
-+            .collect::<Vec<_>>()
++        "native shell exited with stderr:\n{}",
++        String::from_utf8_lossy(&stderr)
 +    );
 +    let output = batch
 +        .chunks
