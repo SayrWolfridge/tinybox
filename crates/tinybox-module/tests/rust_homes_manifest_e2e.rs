@@ -433,8 +433,8 @@ fn assert_macos_byte_homes_omitted(
         };
         assert_eq!(
             error.raw_os_error(),
-            Some(92),
-            "unexpected macOS path error: {error}"
+            Some(2),
+            "filesystem-rejected home should remain absent: {error}"
         );
         let root = path.as_os_str().as_bytes();
         let utf8_grant = grants
