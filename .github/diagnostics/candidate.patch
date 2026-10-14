@@ -1,0 +1,2310 @@
+diff --git a/crates/tinybox-bus/src/grants.rs b/crates/tinybox-bus/src/grants.rs
+index 13258b10ee0e378a930ec6387d2a14885f16f2aa..ddbcaf172f18571530b7f1ce6599801f3e08262a 100644
+--- a/crates/tinybox-bus/src/grants.rs
++++ b/crates/tinybox-bus/src/grants.rs
+@@ -49,6 +49,9 @@ pub struct ResolveLocalGrantsRequest {
+     pub config: LocalGrantConfig,
+     /// Host's unconditional protected-path floor.
+     pub protected: ProtectedPaths,
++    /// Permit canonical non-UTF-8 Unix grant paths in `unix_paths`.
++    #[serde(default, skip_serializing_if = "is_false")]
++    pub allow_unix_paths: bool,
+ }
+ 
+ /// Canonical existing filesystem grants beyond a workload's writable root.
+@@ -58,4 +61,28 @@ pub struct LocalGrants {
+     pub read_only: Vec<String>,
+     /// Read, executable, and writable paths.
+     pub read_write: Vec<String>,
++    /// Canonical Unix paths whose OS bytes are not UTF-8.
++    #[serde(default, skip_serializing_if = "UnixPathGrants::is_empty")]
++    pub unix_paths: UnixPathGrants,
++}
++
++/// Non-UTF-8 Unix grant paths transported as their original OS bytes.
++#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
++pub struct UnixPathGrants {
++    /// Read and executable paths.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub read_only: Vec<Vec<u8>>,
++    /// Read, executable, and writable paths.
++    #[serde(default, skip_serializing_if = "Vec::is_empty")]
++    pub read_write: Vec<Vec<u8>>,
++}
++
++impl UnixPathGrants {
++    pub(crate) fn is_empty(&self) -> bool {
++        self.read_only.is_empty() && self.read_write.is_empty()
++    }
++}
++
++fn is_false(value: &bool) -> bool {
++    !value
+ }
+diff --git a/crates/tinybox-bus/src/jail.rs b/crates/tinybox-bus/src/jail.rs
+index f75e27cbf23ce5fe696ec2e4f4d6ce9e2ab096b6..2fc1352272895b21a3eb9da6d11206dc487754ba 100644
+--- a/crates/tinybox-bus/src/jail.rs
++++ b/crates/tinybox-bus/src/jail.rs
+@@ -19,6 +19,9 @@ pub struct NativeJailConfig {
+     pub read_only: Vec<String>,
+     /// Existing absolute paths additionally granted write access.
+     pub read_write: Vec<String>,
++    /// Approved non-UTF-8 Unix grant paths, represented by their OS bytes.
++    #[serde(default, skip_serializing_if = "crate::UnixPathGrants::is_empty")]
++    pub unix_paths: crate::UnixPathGrants,
+     /// Whether outgoing network access is permitted.
+     pub allow_net: bool,
+     /// Whether child processes are permitted.
+diff --git a/crates/tinybox-bus/src/jail_tests.rs b/crates/tinybox-bus/src/jail_tests.rs
+index f1c52617f38d10414be01bf6c09358716737de9c..9c3221d6591f98d8a80840f58950848a2c72cd33 100644
+--- a/crates/tinybox-bus/src/jail_tests.rs
++++ b/crates/tinybox-bus/src/jail_tests.rs
+@@ -17,3 +17,42 @@ fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), ser
+     );
+     Ok(())
+ }
++
++#[test]
++fn unix_path_fields_default_and_empty_values_keep_legacy_wire_shape()
++-> Result<(), serde_json::Error> {
++    let value = serde_json::json!({
++        "read_only": ["/usr"], "read_write": [], "allow_net": true,
++        "allow_subprocess": false, "enforcement": "enforced",
++        "require_process_isolation": true
++    });
++    let config: NativeJailConfig = serde_json::from_value(value.clone())?;
++    assert!(config.unix_paths.is_empty());
++    assert_eq!(serde_json::to_value(config)?, value);
++    let grants = UnixPathGrants::default();
++    assert_eq!(serde_json::to_value(grants)?, serde_json::json!({}));
++    Ok(())
++}
++
++#[test]
++fn unix_grant_bytes_round_trip_without_text_conversion() -> Result<(), serde_json::Error> {
++    let grants = UnixPathGrants {
++        read_only: vec![vec![b'/', b't', 0xff]],
++        read_write: vec![vec![b'/', b'w', 0xfe]],
++    };
++    let encoded = serde_json::to_value(&grants)?;
++    assert_eq!(serde_json::from_value::<UnixPathGrants>(encoded)?, grants);
++    Ok(())
++}
++
++#[test]
++fn local_grant_result_defaults_to_the_legacy_utf8_wire_shape() -> Result<(), serde_json::Error> {
++    let value = serde_json::json!({
++        "read_only": ["/usr"],
++        "read_write": ["/workspace"]
++    });
++    let grants: LocalGrants = serde_json::from_value(value.clone())?;
++    assert!(grants.unix_paths.is_empty());
++    assert_eq!(serde_json::to_value(grants)?, value);
++    Ok(())
++}
+diff --git a/crates/tinybox-bus/src/lib.rs b/crates/tinybox-bus/src/lib.rs
+index 12e6234c10efdc5f205f94c876d4f0aaf54e2cdd..940ac42187d9a225d89d3586ec5de4d9402c2be2 100644
+--- a/crates/tinybox-bus/src/lib.rs
++++ b/crates/tinybox-bus/src/lib.rs
+@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
+ use std::collections::BTreeMap;
+ 
+ mod grants;
+-pub use grants::{LocalGrantConfig, LocalGrants, ProtectedPaths, ResolveLocalGrantsRequest};
++pub use grants::{
++    LocalGrantConfig, LocalGrants, ProtectedPaths, ResolveLocalGrantsRequest, UnixPathGrants,
++};
+ 
+ mod jail;
+ pub use jail::{JailEnforcement, NativeJailConfig};
+@@ -60,8 +62,9 @@ pub use files::{
+ /// 1.18 adds the standalone `ValidateDockerPolicy` member, so a host can ask the
+ /// module for the same verdict the Docker run members enforce without starting
+ /// a container, and `hide_window` on [`ShellExecRequest`] (Windows console
+-/// suppression for a native shell child; ignored elsewhere).
+-pub const CONTRACT_VERSION: (u32, u32) = (1, 18);
++/// suppression for a native shell child; ignored elsewhere. 1.19 adds opted-in
++/// byte-preserving Unix grant transport.
++pub const CONTRACT_VERSION: (u32, u32) = (1, 19);
+ 
+ /// Whether this host vocabulary can bind to a module's advertised version.
+ /// The major must match and the module's minor must include every host member.
+diff --git a/crates/tinybox-bus/src/lib_tests.rs b/crates/tinybox-bus/src/lib_tests.rs
+index c3f7b8378cc5ae7eb94360ccc6517279784f0ff5..d3b6d53770027fa85cc2fb71f426425fdaa9a144 100644
+--- a/crates/tinybox-bus/src/lib_tests.rs
++++ b/crates/tinybox-bus/src/lib_tests.rs
+@@ -51,7 +51,7 @@ fn docker_run_vocabulary_is_typed_bounded_and_additive() -> Result<(), serde_jso
+     assert_eq!(METHODS[29], "CleanupDocker");
+     assert_eq!(METHODS[30], "RunDockerWithoutWorkspace");
+     assert_eq!(METHODS[34], "StartNativeShellExec");
+-    assert_eq!(CONTRACT_VERSION, (1, 18));
++    assert_eq!(CONTRACT_VERSION, (1, 19));
+     assert_eq!(MAX_DOCKER_RUN_TIMEOUT_MS, 86_400_000);
+     let serialized = serde_json::to_value(&request)?;
+     assert_eq!(serialized["read_only_rootfs"], false);
+@@ -129,8 +129,9 @@ fn host_gateway_and_docker_facts_are_additive_and_default_safely() -> Result<(),
+ #[test]
+ fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
+ -> Result<(), serde_json::Error> {
+-    assert_eq!(CONTRACT_VERSION, (1, 18));
++    assert_eq!(CONTRACT_VERSION, (1, 19));
+     assert!(is_compatible(CONTRACT_VERSION));
++    assert!(!is_compatible((1, 18)));
+     assert!(!is_compatible((1, 8)));
+     assert!(!is_compatible((1, 7)));
+     assert!(!is_compatible((1, 6)));
+@@ -147,7 +148,7 @@ fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
+         exec_backends: Vec::new(),
+         spawn_backends: Vec::new(),
+     };
+-    let snapshot = serde_json::json!({"contract_version":[1,18],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
++    let snapshot = serde_json::json!({"contract_version":[1,19],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
+     assert_eq!(serde_json::to_value(&capabilities)?, snapshot);
+     assert_eq!(
+         serde_json::from_value::<ModuleCapabilities>(snapshot)?,
+@@ -166,7 +167,7 @@ fn no_workspace_docker_operation_is_present_in_the_contract() {
+             .count(),
+         1
+     );
+-    assert_eq!(CONTRACT_VERSION, (1, 18));
++    assert_eq!(CONTRACT_VERSION, (1, 19));
+ }
+ 
+ #[test]
+@@ -265,11 +266,14 @@ fn local_grant_configuration_defaults_and_floor_round_trip() -> Result<(), serde
+             prefixes: vec!["/etc".into()],
+             credential_roots: vec!["/operator/.ssh".into()],
+         },
++        allow_unix_paths: false,
+     };
+     assert_eq!(
+         serde_json::from_value::<ResolveLocalGrantsRequest>(serde_json::to_value(&request)?)?,
+         request
+     );
++    let wire = serde_json::to_value(&request)?;
++    assert_eq!(wire.get("allow_unix_paths"), None);
+     Ok(())
+ }
+ 
+diff --git a/crates/tinybox-jail/src/grants/README.md b/crates/tinybox-jail/src/grants/README.md
+index d3e638cc1977608f4e9f6bb8ba037c22d8804b8c..13228670d9f4080859dfa6bdc57afe43d51732e7 100644
+--- a/crates/tinybox-jail/src/grants/README.md
++++ b/crates/tinybox-jail/src/grants/README.md
+@@ -30,3 +30,11 @@ read-only. Mutable tools need separately approved disposable state.
+ Hosts supply the complete protected floor and keep authorization. This module
+ does not start commands or weaken unavailable confinement. See
+ [the contract specification](../../../../docs/specs/local-grants.md).
++
++Custom existing absolute nonempty `RUSTUP_HOME` and `CARGO_HOME` directories are
++also discovered. Rustup is granted read-only as a whole tree. Cargo receives only
++`bin`, `config.toml`, `config`, `env`, `registry` and `git`; the Cargo root stays
++excluded. Empty, relative, missing and non-directory custom roots are skipped.
++Native OS paths retain their original bytes through discovery. The caller's
++protected floor and canonical alias inspection apply to every custom root, and
++writable extras cannot reach fixed toolchain state or Cargo roots.
+diff --git a/crates/tinybox-jail/src/grants/mod.rs b/crates/tinybox-jail/src/grants/mod.rs
+index 640a26e991925527e2e42f835b3084e6f49a347f..25c7c4077a9fa98ed369f5d44a39e338903f702b 100644
+--- a/crates/tinybox-jail/src/grants/mod.rs
++++ b/crates/tinybox-jail/src/grants/mod.rs
+@@ -38,16 +38,39 @@ pub fn resolve_local_jail_grants(
+     protected: &ProtectedPaths,
+ ) -> tinybox_core::Result<JailGrants> {
+     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+-    resolve_local_jail_grants_in(home, xdg_config_home.as_deref(), cfg, protected)
++    let rustup_home = std::env::var_os("RUSTUP_HOME");
++    let cargo_home = std::env::var_os("CARGO_HOME");
++    resolve_local_jail_grants_with_homes(
++        home,
++        xdg_config_home.as_deref(),
++        rustup_home.as_deref(),
++        cargo_home.as_deref(),
++        cfg,
++        protected,
++    )
+ }
+ 
+ /// [`resolve_local_jail_grants`] with `XDG_CONFIG_HOME` passed in rather than
+ /// read from the process environment, so callers (and tests) stay hermetic.
++#[cfg(test)]
+ pub(crate) fn resolve_local_jail_grants_in(
+     home: Option<&Path>,
+     xdg_config_home: Option<&std::ffi::OsStr>,
+     cfg: &LocalGrantConfig,
+     protected: &ProtectedPaths,
++) -> tinybox_core::Result<JailGrants> {
++    resolve_local_jail_grants_with_homes(home, xdg_config_home, None, None, cfg, protected)
++}
++
++/// Resolve grants with all environment-derived roots supplied explicitly.
++/// This keeps discovery testable without changing the process environment.
++fn resolve_local_jail_grants_with_homes(
++    home: Option<&Path>,
++    xdg_config_home: Option<&std::ffi::OsStr>,
++    rustup_home: Option<&std::ffi::OsStr>,
++    cargo_home: Option<&std::ffi::OsStr>,
++    cfg: &LocalGrantConfig,
++    protected: &ProtectedPaths,
+ ) -> tinybox_core::Result<JailGrants> {
+     let home = home.map(|h| h.canonicalize().unwrap_or_else(|_| h.to_path_buf()));
+     let mut b = Builder::new(home.as_deref(), protected);
+@@ -62,6 +85,12 @@ pub(crate) fn resolve_local_jail_grants_in(
+         for dir in SYSTEM_TOOLCHAIN_DIRS {
+             b.fixed_read_only(Path::new(dir), "toolchain");
+         }
++        if let Some(path) = existing_absolute_directory(rustup_home) {
++            b.fixed_read_only(&path, "custom Rustup home");
++        }
++        if let Some(path) = existing_absolute_directory(cargo_home) {
++            b.add_cargo_home(&path);
++        }
+         if let Some(h) = home.as_deref() {
+             b.add_gitconfig_at(h, xdg_config_home)?;
+         }
+@@ -89,12 +118,18 @@ pub(crate) fn resolve_local_jail_grants_in(
+     Ok(b.grants)
+ }
+ 
++fn existing_absolute_directory(raw: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
++    let path = PathBuf::from(raw?);
++    (!path.as_os_str().is_empty() && path.is_absolute() && path.is_dir()).then_some(path)
++}
++
+ struct Builder<'a> {
+     home: Option<&'a Path>,
+     protected: &'a ProtectedPaths,
+     grants: JailGrants,
+     seen: HashSet<PathBuf>,
+     fixed_read_only: Vec<PathBuf>,
++    cargo_roots: Vec<PathBuf>,
+ }
+ 
+ impl<'a> Builder<'a> {
+@@ -105,6 +140,7 @@ impl<'a> Builder<'a> {
+             grants: JailGrants::default(),
+             seen: HashSet::new(),
+             fixed_read_only: Vec::new(),
++            cargo_roots: Vec::new(),
+         }
+     }
+ 
+@@ -164,7 +200,17 @@ impl<'a> Builder<'a> {
+     }
+ 
+     fn read_only(&mut self, path: &Path, source: &str) {
+-        self.add_read_only(path, source, false);
++        let Some(canonical) = self.admit(path, source) else {
++            return;
++        };
++        if self.exposes_cargo_root(&canonical) {
++            log::warn!(
++                "refused extra grant containing the Cargo home root: {}",
++                path.display()
++            );
++            return;
++        }
++        self.record_read_only(canonical);
+     }
+ 
+     fn fixed_read_only(&mut self, path: &Path, source: &str) {
+@@ -172,15 +218,21 @@ impl<'a> Builder<'a> {
+     }
+ 
+     fn add_read_only(&mut self, path: &Path, source: &str, fixed: bool) {
+-        if let Some(p) = self.admit(path, source) {
+-            if fixed {
+-                self.fixed_read_only.push(path.to_path_buf());
+-                self.fixed_read_only.push(p.clone());
+-            }
+-            if self.seen.insert(p.clone()) {
+-                self.grants.read_only.push(p);
++        if fixed {
++            self.fixed_read_only.push(path.to_path_buf());
++            if let Ok(canonical) = path.canonicalize() {
++                self.fixed_read_only.push(canonical);
+             }
+         }
++        if let Some(p) = self.admit(path, source) {
++            self.record_read_only(p);
++        }
++    }
++
++    fn record_read_only(&mut self, path: PathBuf) {
++        if self.seen.insert(path.clone()) {
++            self.grants.read_only.push(path);
++        }
+     }
+ 
+     fn read_write(&mut self, path: &Path, source: &str) {
+@@ -198,7 +250,7 @@ impl<'a> Builder<'a> {
+                     .chain(CARGO_READ_ONLY_FILES.iter().copied())
+                     .any(|entry| reaches(&home.join(".cargo").join(entry)))
+             });
+-            if exposes_fixed || exposes_cargo {
++            if exposes_fixed || exposes_cargo || self.exposes_cargo_root(&p) {
+                 log::warn!(
+                     "refused writable grant reaching fixed host toolchain state: {}",
+                     p.display()
+@@ -223,6 +275,10 @@ impl<'a> Builder<'a> {
+         if !cargo.is_dir() {
+             return;
+         }
++        if let Ok(canonical) = cargo.canonicalize() {
++            self.cargo_roots.push(cargo.to_path_buf());
++            self.cargo_roots.push(canonical);
++        }
+         log::debug!("[sandbox:grants] granting ~/.cargo parts with host code read-only");
+         self.fixed_read_only(&cargo.join("bin"), "toolchain");
+         self.fixed_read_only(&cargo.join("registry"), "toolchain");
+@@ -231,6 +287,13 @@ impl<'a> Builder<'a> {
+             self.fixed_read_only(&cargo.join(f), "toolchain");
+         }
+     }
++
++    fn exposes_cargo_root(&self, path: &Path) -> bool {
++        let normalized = normalized_floor_path(&path.to_string_lossy());
++        self.cargo_roots.iter().any(|root| {
++            root_spellings(root).any(|cargo_root| same_or_descendant(&cargo_root, &normalized))
++        })
++    }
+ }
+ 
+ #[cfg(test)]
+diff --git a/crates/tinybox-jail/src/grants/mod_tests.rs b/crates/tinybox-jail/src/grants/mod_tests.rs
+index e75dd778fc4df249a29a4b1c94b58277c2b9f645..28634d98f3e8f48b1a82b3b0ae4cd65a408f5325 100644
+--- a/crates/tinybox-jail/src/grants/mod_tests.rs
++++ b/crates/tinybox-jail/src/grants/mod_tests.rs
+@@ -1121,3 +1121,281 @@ fn missing_git_include_locations_cannot_be_created_from_writable_grants()
+     assert!(!has(&grants.read_only, &home.path().join("future/config")));
+     Ok(())
+ }
++fn resolve_with_homes(
++    home: Option<&Path>,
++    rustup_home: Option<&std::ffi::OsStr>,
++    cargo_home: Option<&std::ffi::OsStr>,
++    cfg: &LocalGrantConfig,
++    protected: &ProtectedPaths,
++) -> tinybox_core::Result<JailGrants> {
++    resolve_local_jail_grants_with_homes(home, None, rustup_home, cargo_home, cfg, protected)
++}
++
++#[test]
++fn invalid_custom_toolchain_environment_roots_are_skipped() -> Result<(), Box<dyn std::error::Error>>
++{
++    let home = fake_home()?;
++    fs::create_dir_all(home.path().join(".cargo/bin"))?;
++    fs::write(home.path().join(".cargo/config.toml"), "")?;
++    let relative_rustup = std::ffi::OsStr::new("relative-rustup");
++    let missing_cargo = home.path().join("missing-cargo");
++    let file_root = home.path().join("file-root");
++    fs::write(&file_root, "fixture")?;
++    for (rustup, cargo) in [
++        (
++            Some(std::ffi::OsStr::new("")),
++            Some(std::ffi::OsStr::new("")),
++        ),
++        (Some(relative_rustup), Some(relative_rustup)),
++        (Some(file_root.as_os_str()), Some(file_root.as_os_str())),
++        (
++            Some(missing_cargo.as_os_str()),
++            Some(missing_cargo.as_os_str()),
++        ),
++    ] {
++        let grants = resolve_with_homes(
++            Some(home.path()),
++            rustup,
++            cargo,
++            &LocalGrantConfig::default(),
++            &ProtectedPaths::default(),
++        )?;
++        let canonical_home = home.path().canonicalize()?;
++        assert!(
++            has(&grants.read_only, &canonical_home.join(".rustup")),
++            "default Rustup home disappeared: {grants:?}"
++        );
++        assert!(
++            has(&grants.read_only, &canonical_home.join(".cargo/bin")),
++            "default Cargo bin disappeared: {grants:?}"
++        );
++        assert!(
++            has(
++                &grants.read_only,
++                &canonical_home.join(".cargo/config.toml")
++            ),
++            "default Cargo config disappeared: {grants:?}"
++        );
++        assert!(
++            !grants
++                .read_only
++                .iter()
++                .any(|path| path.ends_with("relative-rustup")),
++            "relative root was admitted: {grants:?}"
++        );
++    }
++    Ok(())
++}
++
++#[test]
++fn custom_cargo_credentials_are_excluded_by_the_protected_floor()
++-> Result<(), Box<dyn std::error::Error>> {
++    let home = tempfile::tempdir()?;
++    let rustup = home.path().join("custom-rustup");
++    let cargo = home.path().join("custom-cargo");
++    fs::create_dir(&rustup)?;
++    fs::create_dir_all(cargo.join("bin"))?;
++    fs::create_dir_all(cargo.join("registry"))?;
++    fs::create_dir_all(cargo.join("git"))?;
++    fs::write(cargo.join("registry/credentials.toml"), "secret")?;
++    let protected = ProtectedPaths {
++        components: vec!["credentials.toml".into()],
++        ..ProtectedPaths::default()
++    };
++    let grants = resolve_with_homes(
++        Some(home.path()),
++        Some(rustup.as_os_str()),
++        Some(cargo.as_os_str()),
++        &LocalGrantConfig::default(),
++        &protected,
++    )?;
++    let cargo = cargo.canonicalize()?;
++    assert!(
++        !has(&grants.read_only, &cargo.join("registry")),
++        "Cargo subtree containing credentials was admitted: {grants:?}"
++    );
++    assert!(
++        !grants
++            .read_only
++            .iter()
++            .any(|path| path.ends_with("credentials.toml")),
++        "credential file was granted: {grants:?}"
++    );
++    Ok(())
++}
++
++#[test]
++fn writable_extras_cannot_promote_custom_toolchain_roots_or_selected_cargo_state()
++-> Result<(), Box<dyn std::error::Error>> {
++    let home = tempfile::tempdir()?;
++    let rustup = home.path().join("custom-rustup");
++    let cargo = home.path().join("custom-cargo");
++    fs::create_dir_all(rustup.join("toolchains/stable"))?;
++    fs::create_dir_all(cargo.join("bin"))?;
++    fs::create_dir_all(cargo.join("registry/src"))?;
++    fs::create_dir_all(cargo.join("git"))?;
++    let config = LocalGrantConfig {
++        extra_read_only: vec![cargo.to_string_lossy().into_owned()],
++        extra_read_write: vec![
++            home.path().to_string_lossy().into_owned(),
++            rustup.to_string_lossy().into_owned(),
++            rustup.join("toolchains").to_string_lossy().into_owned(),
++            cargo.to_string_lossy().into_owned(),
++            cargo.join("bin").to_string_lossy().into_owned(),
++            cargo.join("registry").to_string_lossy().into_owned(),
++            cargo.join("registry/src").to_string_lossy().into_owned(),
++            cargo.join("git").to_string_lossy().into_owned(),
++        ],
++        ..LocalGrantConfig::default()
++    };
++    let grants = resolve_with_homes(
++        Some(home.path()),
++        Some(rustup.as_os_str()),
++        Some(cargo.as_os_str()),
++        &config,
++        &ProtectedPaths::default(),
++    )?;
++    assert!(
++        !has(&grants.read_only, &cargo.canonicalize()?),
++        "whole Cargo root was granted by an extra: {grants:?}"
++    );
++    assert!(
++        grants.read_write.is_empty(),
++        "writable extras promoted fixed toolchain state: {grants:?}"
++    );
++    Ok(())
++}
++
++#[test]
++fn safe_explicit_cargo_children_keep_their_requested_access()
++-> Result<(), Box<dyn std::error::Error>> {
++    let home = tempfile::tempdir()?;
++    let cargo = home.path().join("custom-cargo");
++    let read_only = cargo.join("private-extension/read-only");
++    let read_write = cargo.join("private-extension/read-write");
++    fs::create_dir_all(cargo.join("bin"))?;
++    fs::create_dir_all(&read_only)?;
++    fs::create_dir_all(&read_write)?;
++    let config = LocalGrantConfig {
++        extra_read_only: vec![read_only.to_string_lossy().into_owned()],
++        extra_read_write: vec![read_write.to_string_lossy().into_owned()],
++        ..LocalGrantConfig::default()
++    };
++    let grants = resolve_with_homes(
++        Some(home.path()),
++        None,
++        Some(cargo.as_os_str()),
++        &config,
++        &ProtectedPaths::default(),
++    )?;
++    assert!(
++        has(&grants.read_only, &read_only.canonicalize()?),
++        "safe Cargo child read-only extra was refused: {grants:?}"
++    );
++    assert!(
++        has(&grants.read_write, &read_write.canonicalize()?),
++        "safe Cargo child writable extra was refused: {grants:?}"
++    );
++    Ok(())
++}
++
++#[test]
++#[cfg(unix)]
++fn extra_read_only_symlink_to_whole_cargo_root_is_refused() -> Result<(), Box<dyn std::error::Error>>
++{
++    let home = tempfile::tempdir()?;
++    let cargo = home.path().join("custom-cargo");
++    let alias = home.path().join("unregistered-cargo-root-alias");
++    fs::create_dir_all(cargo.join("bin"))?;
++    std::os::unix::fs::symlink(&cargo, &alias)?;
++    let config = LocalGrantConfig {
++        extra_read_only: vec![alias.to_string_lossy().into_owned()],
++        ..LocalGrantConfig::default()
++    };
++    let grants = resolve_with_homes(
++        Some(home.path()),
++        None,
++        Some(cargo.as_os_str()),
++        &config,
++        &ProtectedPaths::default(),
++    )?;
++    assert!(
++        !has(&grants.read_only, &cargo.canonicalize()?),
++        "symlink extra exposed whole Cargo root: {grants:?}"
++    );
++    assert!(
++        has(&grants.read_only, &cargo.join("bin").canonicalize()?),
++        "fixed Cargo bin grant was lost: {grants:?}"
++    );
++    Ok(())
++}
++#[test]
++#[cfg(unix)]
++fn custom_toolchain_symlink_aliases_cannot_be_promoted_to_writable()
++-> Result<(), Box<dyn std::error::Error>> {
++    let home = tempfile::tempdir()?;
++    let rustup = home.path().join("custom-rustup");
++    let cargo = home.path().join("custom-cargo");
++    fs::create_dir_all(rustup.join("toolchains/stable"))?;
++    fs::create_dir_all(cargo.join("bin"))?;
++    std::os::unix::fs::symlink(&rustup, home.path().join("rustup-alias"))?;
++    std::os::unix::fs::symlink(&cargo, home.path().join("cargo-alias"))?;
++    let config = LocalGrantConfig {
++        extra_read_write: vec![
++            home.path()
++                .join("rustup-alias/toolchains")
++                .to_string_lossy()
++                .into_owned(),
++            home.path()
++                .join("cargo-alias/bin")
++                .to_string_lossy()
++                .into_owned(),
++        ],
++        ..LocalGrantConfig::default()
++    };
++    let grants = resolve_with_homes(
++        Some(home.path()),
++        Some(home.path().join("rustup-alias").as_os_str()),
++        Some(home.path().join("cargo-alias").as_os_str()),
++        &config,
++        &ProtectedPaths::default(),
++    )?;
++    assert!(
++        grants.read_write.is_empty(),
++        "symlink alias promoted fixed toolchain state: {grants:?}"
++    );
++    Ok(())
++}
++
++#[test]
++fn rejected_custom_rustup_root_still_blocks_writable_descendants()
++-> Result<(), Box<dyn std::error::Error>> {
++    let home = tempfile::tempdir()?;
++    let rustup = home.path().join("custom-rustup");
++    fs::create_dir_all(rustup.join("toolchains/stable"))?;
++    fs::write(rustup.join(".private-marker"), "protected")?;
++    let config = LocalGrantConfig {
++        extra_read_write: vec![rustup.join("toolchains").to_string_lossy().into_owned()],
++        ..LocalGrantConfig::default()
++    };
++    let protected = ProtectedPaths {
++        components: vec![".private-marker".into()],
++        ..ProtectedPaths::default()
++    };
++    let grants = resolve_with_homes(
++        Some(home.path()),
++        Some(rustup.as_os_str()),
++        None,
++        &config,
++        &protected,
++    )?;
++    assert!(
++        !has(&grants.read_only, &rustup.canonicalize()?),
++        "protected Rustup root was granted: {grants:?}"
++    );
++    assert!(
++        grants.read_write.is_empty(),
++        "writable extra promoted a descendant of the rejected Rustup root: {grants:?}"
++    );
++    Ok(())
++}
+diff --git a/crates/tinybox-jail/tests/toolchain_homes.rs b/crates/tinybox-jail/tests/toolchain_homes.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d6526b9e33e
+--- /dev/null
++++ b/crates/tinybox-jail/tests/toolchain_homes.rs
+@@ -0,0 +1,136 @@
++//! Public resolver regressions for custom Rustup and Cargo homes.
++use std::ffi::OsStr;
++use std::fs;
++use std::path::{Path, PathBuf};
++use std::process::Command;
++use tinybox_bus::{LocalGrantConfig, ProtectedPaths};
++use tinybox_jail::grants::resolve_local_jail_grants;
++
++fn has(grants: &[PathBuf], path: &Path) -> bool {
++    grants.iter().any(|grant| grant == path)
++}
++
++fn run_child(
++    test_name: &str,
++    rustup_home: &OsStr,
++    cargo_home: &OsStr,
++    fixture_home: &Path,
++) -> Result<(), Box<dyn std::error::Error>> {
++    let output = Command::new(std::env::current_exe()?)
++        .arg("--exact")
++        .arg(test_name)
++        .arg("--nocapture")
++        .env("TINYBOX_CUSTOM_HOME_CHILD", "1")
++        .env("TINYBOX_FIXTURE_HOME", fixture_home)
++        .env("RUSTUP_HOME", rustup_home)
++        .env("CARGO_HOME", cargo_home)
++        .env_remove("XDG_CONFIG_HOME")
++        .output()?;
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    assert!(
++        output.status.success(),
++        "child test {test_name} failed: {stdout}\n{stderr}"
++    );
++    assert!(
++        stdout.contains("running 1 test"),
++        "child did not execute exactly one test: {stdout}\n{stderr}"
++    );
++    assert!(
++        stdout.contains(&format!("test {test_name} ... ok")),
++        "child test did not report success: {stdout}\n{stderr}"
++    );
++    Ok(())
++}
++
++fn assert_custom_homes_are_granted() -> Result<(), Box<dyn std::error::Error>> {
++    let home =
++        PathBuf::from(std::env::var_os("TINYBOX_FIXTURE_HOME").ok_or("missing fixture home")?);
++    let rustup = PathBuf::from(std::env::var_os("RUSTUP_HOME").ok_or("missing RUSTUP_HOME")?);
++    let cargo = PathBuf::from(std::env::var_os("CARGO_HOME").ok_or("missing CARGO_HOME")?);
++    let grants = resolve_local_jail_grants(
++        Some(&home),
++        &LocalGrantConfig::default(),
++        &ProtectedPaths::default(),
++    )?;
++    let rustup = rustup.canonicalize()?;
++    assert!(
++        has(&grants.read_only, &rustup),
++        "custom Rustup home was not read-only: {grants:?}"
++    );
++    assert!(
++        !has(&grants.read_write, &rustup),
++        "custom Rustup home was writable: {grants:?}"
++    );
++    let cargo = cargo.canonicalize()?;
++    for entry in ["bin", "config.toml", "env", "registry", "git"] {
++        let selected = cargo.join(entry);
++        if selected.exists() {
++            assert!(
++                has(&grants.read_only, &selected),
++                "custom Cargo entry {entry} was not read-only: {grants:?}"
++            );
++        }
++    }
++    assert!(
++        !has(&grants.read_only, &cargo),
++        "whole custom Cargo root was granted: {grants:?}"
++    );
++    assert!(
++        !has(&grants.read_write, &cargo),
++        "custom Cargo root was writable: {grants:?}"
++    );
++    Ok(())
++}
++
++#[test]
++fn custom_utf8_rust_homes_are_discovered_by_public_resolver()
++-> Result<(), Box<dyn std::error::Error>> {
++    if std::env::var_os("TINYBOX_CUSTOM_HOME_CHILD").is_some() {
++        return assert_custom_homes_are_granted();
++    }
++    let fixture = tempfile::tempdir()?;
++    let rustup = fixture.path().join("rustup-custom");
++    let cargo = fixture.path().join("cargo-custom");
++    fs::create_dir_all(&rustup)?;
++    fs::create_dir_all(cargo.join("bin"))?;
++    fs::create_dir_all(cargo.join("registry"))?;
++    fs::create_dir_all(cargo.join("git"))?;
++    fs::write(cargo.join("config.toml"), "[net]\noffline = true\n")?;
++    fs::write(cargo.join("env"), "")?;
++    run_child(
++        "custom_utf8_rust_homes_are_discovered_by_public_resolver",
++        rustup.as_os_str(),
++        cargo.as_os_str(),
++        fixture.path(),
++    )
++}
++
++#[test]
++#[cfg(unix)]
++fn custom_non_utf8_rust_homes_are_discovered_by_public_resolver()
++-> Result<(), Box<dyn std::error::Error>> {
++    use std::os::unix::ffi::OsStringExt;
++    if std::env::var_os("TINYBOX_CUSTOM_HOME_CHILD").is_some() {
++        return assert_custom_homes_are_granted();
++    }
++    let fixture = tempfile::tempdir()?;
++    let rustup = fixture
++        .path()
++        .join(std::ffi::OsString::from_vec(b"rustup-\xff".to_vec()));
++    let cargo = fixture
++        .path()
++        .join(std::ffi::OsString::from_vec(b"cargo-\xfe".to_vec()));
++    fs::create_dir_all(&rustup)?;
++    fs::create_dir_all(cargo.join("bin"))?;
++    fs::create_dir_all(cargo.join("registry"))?;
++    fs::create_dir_all(cargo.join("git"))?;
++    fs::write(cargo.join("config.toml"), "[net]\noffline = true\n")?;
++    fs::write(cargo.join("env"), "")?;
++    run_child(
++        "custom_non_utf8_rust_homes_are_discovered_by_public_resolver",
++        rustup.as_os_str(),
++        cargo.as_os_str(),
++        fixture.path(),
++    )
++}
+diff --git a/crates/tinybox-module/examples/verify_module.rs b/crates/tinybox-module/examples/verify_module.rs
+index 9c71ac1f3b7be2819f79c6e4c156e6483782798d..57422d5c9613a1cde3d84ee2cb9c15522008425a 100644
+--- a/crates/tinybox-module/examples/verify_module.rs
++++ b/crates/tinybox-module/examples/verify_module.rs
+@@ -163,6 +163,7 @@ async fn verify_local_grants(proxy: &tinybus::Proxy) -> Result<(), Box<dyn std::
+             ..LocalGrantConfig::default()
+         },
+         protected: ProtectedPaths::default(),
++        allow_unix_paths: false,
+     };
+     let grants: LocalGrants = proxy.call("ResolveLocalGrants", (request,)).await?;
+     if grants.read_only != [allowed] || !grants.read_write.is_empty() {
+diff --git a/crates/tinybox-module/src/tinybus_module/README.md b/crates/tinybox-module/src/tinybus_module/README.md
+index 0350e18dfbc3e84866f830db7fc52951452f81a4..76b7692c02175db8952cdc80af9bb718aa729a80 100644
+--- a/crates/tinybox-module/src/tinybus_module/README.md
++++ b/crates/tinybox-module/src/tinybus_module/README.md
+@@ -50,7 +50,7 @@ The interface is `ai.tinyhumans.tinybox.Box` at
+ | StartNativeShellExec | ShellExecRequest | ProcessRef |
+ | ValidateDockerPolicy | DockerPolicyRequest | DockerPolicyReport |
+ 
+-Capabilities advertises contract version 1.18; 1.0 denotes the original
++Capabilities advertises contract version 1.19; 1.0 denotes the original
+ discovery-only surface. Hosts require equal majors and a module minor at least
+ as new as their vocabulary, using `tinybox_bus::is_compatible`. Version 1.1
+ added reserved resource/process ownership and terminal shutdown; 1.2 adds host
+@@ -103,6 +103,14 @@ existing callers; when true, the command runs through `sh -lc` rather than
+ resource, rootfs, read-only mount, capability-drop, environment, label, output,
+ and timeout behavior remains shared with `RunDocker`.
+ 
++Version 1.19 adds optional `allow_unix_paths` to `ResolveLocalGrantsRequest`
++and `unix_paths` to `LocalGrants` and `NativeJailConfig`. Unix callers can
++preserve canonical non-UTF8 paths as raw bytes after host approval. Empty
++byte groups retain established wire payloads. Module validation checks all
++string and byte grants against the same total limit and enforcement policy.
++Configured Rustup and selective Cargo state remain read-only; native shell
++execution preserves nonempty `RUSTUP_HOME` and `CARGO_HOME` as OS values.
++
+ Version 1.18 adds `ValidateDockerPolicy(DockerPolicyRequest) -> DockerPolicyReport`,
+ the standalone form of the 1.17 check: it lists every way a run's network mode,
+ workspace and read-only mounts would weaken isolation, without a daemon or a
+diff --git a/crates/tinybox-module/src/tinybus_module/mod.rs b/crates/tinybox-module/src/tinybus_module/mod.rs
+index 35c9da008e8fbc3861ca14d64cd6278d4a55223a..c248703d4c9a7ad0f816d8cbeb2eebe6fbcf3c6b 100644
+--- a/crates/tinybox-module/src/tinybus_module/mod.rs
++++ b/crates/tinybox-module/src/tinybus_module/mod.rs
+@@ -61,16 +61,40 @@ impl BoxService {
+     }
+ }
+ 
+-/// Serialize resolved grant paths without replacing invalid UTF-8 bytes.
+-fn grant_paths_to_wire(paths: Vec<std::path::PathBuf>) -> TinyBusResult<Vec<String>> {
+-    paths
+-        .into_iter()
+-        .map(|path| {
+-            path.into_os_string().into_string().map_err(|_| {
+-                resources::failure(tinybox_bus::INVALID_FILE_PATH, "grant path is not UTF-8")
+-            })
+-        })
+-        .collect()
++/// Split resolved paths while preserving the legacy UTF-8 refusal by default.
++fn grant_paths_to_wire(
++    paths: Vec<std::path::PathBuf>,
++    allow_unix_paths: bool,
++) -> TinyBusResult<(Vec<String>, Vec<Vec<u8>>)> {
++    let mut utf8 = Vec::with_capacity(paths.len());
++    #[cfg(unix)]
++    let mut unix = Vec::new();
++    #[cfg(not(unix))]
++    let unix = Vec::new();
++    for path in paths {
++        match path.into_os_string().into_string() {
++            Ok(path) => utf8.push(path),
++            Err(_path) if allow_unix_paths => {
++                #[cfg(unix)]
++                {
++                    use std::os::unix::ffi::OsStringExt;
++                    unix.push(_path.into_vec());
++                }
++                #[cfg(not(unix))]
++                return Err(resources::failure(
++                    tinybox_bus::INVALID_FILE_PATH,
++                    "non-UTF-8 grant paths require Unix",
++                ));
++            }
++            Err(_) => {
++                return Err(resources::failure(
++                    tinybox_bus::INVALID_FILE_PATH,
++                    "grant path is not UTF-8",
++                ));
++            }
++        }
++    }
++    Ok((utf8, unix))
+ }
+ 
+ #[tinybus::interface(name = "ai.tinyhumans.tinybox.Box")]
+@@ -102,6 +126,7 @@ impl BoxService {
+                 "too many local grant paths",
+             ));
+         }
++        let allow_unix_paths = request.allow_unix_paths;
+         let grants = tokio::task::spawn_blocking(move || {
+             tinybox_jail::grants::resolve_local_jail_grants(
+                 request.home.as_deref().map(std::path::Path::new),
+@@ -125,9 +150,16 @@ impl BoxService {
+                 "too many discovered local grant paths",
+             ));
+         }
++        let (read_only, unix_read_only) = grant_paths_to_wire(grants.read_only, allow_unix_paths)?;
++        let (read_write, unix_read_write) =
++            grant_paths_to_wire(grants.read_write, allow_unix_paths)?;
+         Ok(tinybox_bus::LocalGrants {
+-            read_only: grant_paths_to_wire(grants.read_only)?,
+-            read_write: grant_paths_to_wire(grants.read_write)?,
++            read_only,
++            read_write,
++            unix_paths: tinybox_bus::UnixPathGrants {
++                read_only: unix_read_only,
++                read_write: unix_read_write,
++            },
+         })
+     }
+     /// Report native jail enforcement facts without starting a workload.
+diff --git a/crates/tinybox-module/src/tinybus_module/mod_tests.rs b/crates/tinybox-module/src/tinybus_module/mod_tests.rs
+index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413bfb1f33c0 100644
+--- a/crates/tinybox-module/src/tinybus_module/mod_tests.rs
++++ b/crates/tinybox-module/src/tinybus_module/mod_tests.rs
+@@ -242,6 +242,7 @@ async fn new_module_operations_dispatch_and_preserve_validation_errors() -> tiny
+             tinybox_bus::NativeJailConfig {
+                 read_only: Vec::new(),
+                 read_write: Vec::new(),
++                unix_paths: tinybox_bus::UnixPathGrants::default(),
+                 allow_net: false,
+                 allow_subprocess: false,
+                 enforcement: tinybox_bus::JailEnforcement::Declared,
+@@ -923,6 +924,7 @@ async fn local_grant_discovery_refuses_home_ancestors_of_credentials()
+                 ],
+                 ..tinybox_bus::ProtectedPaths::default()
+             },
++            allow_unix_paths: false,
+         })
+         .await?;
+     assert_eq!(
+@@ -949,6 +951,7 @@ async fn local_grant_discovery_rejects_excessive_requested_grants() {
+                 ..tinybox_bus::LocalGrantConfig::default()
+             },
+             protected: tinybox_bus::ProtectedPaths::default(),
++            allow_unix_paths: false,
+         })
+         .await;
+     assert!(result.is_err());
+@@ -962,13 +965,25 @@ fn local_grant_discovery_rejects_non_utf8_canonical_targets()
+     // APFS refuses invalid UTF-8 filenames. Supply the canonical path directly
+     // at the serialization boundary instead of depending on filesystem encoding.
+     let target = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', b'd', 0xff]));
+-    let error = super::grant_paths_to_wire(vec!["/valid".into(), target])
++    let error = super::grant_paths_to_wire(vec!["/valid".into(), target], false)
+         .err()
+         .ok_or("non-UTF8 grant must be rejected")?;
+     assert_eq!(error.wire_name(), tinybox_bus::INVALID_FILE_PATH);
+     Ok(())
+ }
+ 
++#[test]
++#[cfg(unix)]
++fn opted_in_local_grants_keep_non_utf8_paths_as_raw_bytes() -> Result<(), Box<dyn std::error::Error>>
++{
++    use std::os::unix::ffi::OsStringExt;
++    let target = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', b'd', 0xff]));
++    let (utf8, unix) = super::grant_paths_to_wire(vec!["/valid".into(), target], true)?;
++    assert_eq!(utf8, vec!["/valid"]);
++    assert_eq!(unix, vec![vec![b'/', b'd', 0xff]]);
++    Ok(())
++}
++
+ #[tokio::test]
+ async fn local_grant_discovery_bounds_final_toolchain_and_extra_grants()
+ -> Result<(), Box<dyn std::error::Error>> {
+@@ -988,6 +1003,7 @@ async fn local_grant_discovery_bounds_final_toolchain_and_extra_grants()
+                 ..tinybox_bus::LocalGrantConfig::default()
+             },
+             protected: tinybox_bus::ProtectedPaths::default(),
++            allow_unix_paths: false,
+         })
+         .await;
+     assert!(
+@@ -1015,6 +1031,7 @@ async fn local_grant_discovery_accepts_exactly_the_final_limit()
+                 ..tinybox_bus::LocalGrantConfig::default()
+             },
+             protected: tinybox_bus::ProtectedPaths::default(),
++            allow_unix_paths: false,
+         })
+         .await?;
+     assert_eq!(result.read_only.len(), tinybox_bus::MAX_NATIVE_JAIL_GRANTS);
+@@ -1036,6 +1053,7 @@ async fn unsupported_git_include_expansions_refuse_the_whole_discovery()
+                 home: Some(home.path().to_str().ok_or("non-UTF8 fixture")?.into()),
+                 config: tinybox_bus::LocalGrantConfig::default(),
+                 protected: tinybox_bus::ProtectedPaths::default(),
++                allow_unix_paths: false,
+             })
+             .await;
+         assert!(
+diff --git a/crates/tinybox-module/src/tinybus_module/native_jail.rs b/crates/tinybox-module/src/tinybus_module/native_jail.rs
+index 86a33d9c5312b08f77d368efa0e06ef38818d55a..f63255f26aa3afb4852067c5ce8054369ebeff2b 100644
+--- a/crates/tinybox-module/src/tinybus_module/native_jail.rs
++++ b/crates/tinybox-module/src/tinybus_module/native_jail.rs
+@@ -19,7 +19,12 @@ pub(super) fn prepare(
+     if config.require_process_isolation && !backend.is_suitable_for_untrusted_code() {
+         return Err(unavailable());
+     }
+-    if config.read_only.len() + config.read_write.len() > tinybox_bus::MAX_NATIVE_JAIL_GRANTS {
++    if config.read_only.len()
++        + config.read_write.len()
++        + config.unix_paths.read_only.len()
++        + config.unix_paths.read_write.len()
++        > tinybox_bus::MAX_NATIVE_JAIL_GRANTS
++    {
+         return Err(invalid());
+     }
+     let root = root.canonicalize().map_err(|_| invalid())?;
+@@ -39,6 +44,10 @@ pub(super) fn prepare(
+     jail.allow_subprocess = config.allow_subprocess;
+     jail.read_only = grants(&config.read_only)?;
+     jail.read_write = grants(&config.read_write)?;
++    jail.read_only
++        .extend(unix_grants(&config.unix_paths.read_only)?);
++    jail.read_write
++        .extend(unix_grants(&config.unix_paths.read_write)?);
+     match config.enforcement {
+         JailEnforcement::Enforced => backend.require(&jail).map_err(|_| unavailable())?,
+         JailEnforcement::Declared => {
+@@ -54,6 +63,36 @@ pub(super) fn prepare(
+     }
+     Ok(jail)
+ }
++
++fn unix_grants(paths: &[Vec<u8>]) -> Result<Vec<std::path::PathBuf>> {
++    if paths.is_empty() {
++        return Ok(Vec::new());
++    }
++    #[cfg(unix)]
++    {
++        use std::os::unix::ffi::OsStringExt;
++        paths
++            .iter()
++            .map(|bytes| {
++                let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes.clone()));
++                if bytes.len() > tinybox_bus::MAX_FILE_PATH_BYTES
++                    || bytes.contains(&0)
++                    || !path.is_absolute()
++                    || path
++                        .components()
++                        .any(|part| matches!(part, Component::ParentDir))
++                {
++                    return Err(invalid());
++                }
++                path.canonicalize().map_err(|_| invalid())
++            })
++            .collect()
++    }
++    #[cfg(not(unix))]
++    {
++        Err(unavailable())
++    }
++}
+ fn grants(paths: &[String]) -> Result<Vec<std::path::PathBuf>> {
+     paths
+         .iter()
+diff --git a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
+index 577d1c4adfacedd85511bfb9a88c9a435d5af150..92d3c0d91b750eb716b2d4f4a3f5430c17f81b7a 100644
+--- a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
++++ b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
+@@ -39,6 +39,7 @@ fn config() -> NativeJailConfig {
+     NativeJailConfig {
+         read_only: vec![],
+         read_write: vec![],
++        unix_paths: tinybox_bus::UnixPathGrants::default(),
+         allow_net: false,
+         allow_subprocess: false,
+         enforcement: JailEnforcement::Enforced,
+@@ -57,6 +58,64 @@ fn native_grants_reject_relative_parent_null_and_missing_paths() {
+         assert!(grants(&[path.into()]).is_err());
+     }
+ }
++
++#[cfg(unix)]
++#[test]
++fn unix_grants_reject_malformed_and_missing_byte_paths() {
++    for path in [
++        vec![b'r', b'e', b'l'],
++        vec![b'/', b'a', b'/', b'.', b'.', b'/', b'b'],
++        vec![b'/', b'a', 0, b'b'],
++        vec![b'/'; tinybox_bus::MAX_FILE_PATH_BYTES + 1],
++        b"/tinybox-missing-byte-grant".to_vec(),
++    ] {
++        assert!(unix_grants(&[path]).is_err());
++    }
++}
++
++#[cfg(unix)]
++#[test]
++fn opted_in_unix_grants_preserve_path_bytes_and_validate_canonical_targets()
++-> std::result::Result<(), Box<dyn std::error::Error>> {
++    use std::os::unix::ffi::{OsStrExt, OsStringExt};
++    let root = tempfile::tempdir()?;
++    let file = root
++        .path()
++        .join(std::ffi::OsString::from_vec(vec![b'f', 0xff]));
++    std::fs::write(&file, b"data")?;
++    let bytes = file.as_os_str().as_bytes().to_vec();
++    let decoded = unix_grants(std::slice::from_ref(&bytes))?;
++    assert_eq!(decoded, vec![file.canonicalize()?]);
++    Ok(())
++}
++
++#[cfg(unix)]
++#[test]
++fn native_jail_counts_utf8_and_byte_grants_together() {
++    let mut config = config();
++    config.read_only = vec!["/".into(); tinybox_bus::MAX_NATIVE_JAIL_GRANTS];
++    config.unix_paths.read_write = vec![b"/".to_vec()];
++    assert!(
++        prepare(
++            std::path::Path::new("/"),
++            &config,
++            &tinybox_core::ExecRequest::new(["irrelevant"]),
++            &Backend {
++                available: true,
++                suitable: true,
++                name: "fixture",
++                full: true,
++            },
++        )
++        .is_err()
++    );
++}
++
++#[cfg(not(unix))]
++#[test]
++fn non_unix_platform_refuses_nonempty_byte_grants() {
++    assert!(unix_grants(&[b"/tmp".to_vec()]).is_err());
++}
+ #[test]
+ fn unavailable_and_noop_backends_never_accept_declared_enforcement()
+ -> std::result::Result<(), Box<dyn std::error::Error>> {
+@@ -101,6 +160,14 @@ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
+     assert_eq!(jail.root, root.path().canonicalize()?);
+     assert_eq!(jail.read_only, vec![file.canonicalize()?]);
+     assert_eq!(jail.read_write, vec![extra.path().canonicalize()?]);
++    use std::os::unix::ffi::{OsStrExt, OsStringExt};
++    let byte_file = root
++        .path()
++        .join(std::ffi::OsString::from_vec(vec![b'b', 0xff]));
++    std::fs::write(&byte_file, b"bytes")?;
++    config.unix_paths.read_only = vec![byte_file.as_os_str().as_bytes().to_vec()];
++    let jail = prepare(root.path(), &config, &command, &backend)?;
++    assert!(jail.read_only.contains(&byte_file.canonicalize()?));
+     assert!(!jail.allow_net && !jail.allow_subprocess);
+     config.require_process_isolation = true;
+     assert!(prepare(root.path(), &config, &command, &backend).is_err());
+diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/README.md b/crates/tinybox-module/src/tinybus_module/native_shell/README.md
+index 33e1b9a2235978fbba64e252f85db28d3515bd8b..e09274cefc40ce5c8f7eb552fc3fbe9d561a4d26 100644
+--- a/crates/tinybox-module/src/tinybus_module/native_shell/README.md
++++ b/crates/tinybox-module/src/tinybus_module/native_shell/README.md
+@@ -32,3 +32,4 @@ before scheduling blocking work. Pending preparations and retained journals
+ share the module admission budget. Close fences the resource and stops owned
+ work before reporting failed scratch deletion. The sanitized child environment
+ includes resource variables, with explicit shell-request overrides applied last.
++On Unix, nonempty RUSTUP_HOME and CARGO_HOME values are snapshotted as OS values, preserving non-UTF-8 path bytes. Empty values are treated as unset. Explicit resource and shell-request overrides retain their existing precedence. The snapshot carries only these two names as additional host values.
+diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs b/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs
+index 6943cd562831482dac3b33cfd26986062fac88a7..3bd6ddcc767268dc3130d418722305f9f646b989 100644
+--- a/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs
++++ b/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs
+@@ -62,7 +62,7 @@ impl ShellContext {
+             .tempdir_in(scratch_root)
+             .map_err(|_| invalid())?;
+         let selection = tinybox_host::select_shell(&request.shell);
+-        let mut environment = std::collections::BTreeMap::new();
++        let mut environment = std::collections::BTreeMap::<String, std::ffi::OsString>::new();
+         for name in [
+             "PATH", "HOME", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "USER", "SHELL", "TMPDIR",
+         ]
+@@ -73,6 +73,13 @@ impl ShellContext {
+                 if value.is_empty() {
+                     return Err(invalid());
+                 }
++                environment.insert(name.to_owned(), value.into());
++            }
++        }
++        for name in ["RUSTUP_HOME", "CARGO_HOME"] {
++            if let Some(value) = std::env::var_os(name)
++                && !value.is_empty()
++            {
+                 environment.insert(name.to_owned(), value);
+             }
+         }
+@@ -86,7 +93,7 @@ impl ShellContext {
+             if cfg!(windows) {
+                 environment.retain(|key, _| !key.eq_ignore_ascii_case(name));
+             }
+-            environment.insert(name.clone(), value.clone());
++            environment.insert(name.clone(), value.clone().into());
+         }
+         for name in ["TMPDIR", "TEMP", "TMP"] {
+             if !resolved
+@@ -269,11 +276,13 @@ mod tests;
+ 
+ // Parent value wins; otherwise default to UTF-8 so a legacy Windows console
+ // code page cannot kill a Python script.
+-fn apply_python_utf8_defaults(environment: &mut std::collections::BTreeMap<String, String>) {
++fn apply_python_utf8_defaults(
++    environment: &mut std::collections::BTreeMap<String, std::ffi::OsString>,
++) {
+     for (name, default) in [("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8")] {
+         let value = std::env::var_os(name)
+             .and_then(|v| v.into_string().ok())
+             .unwrap_or_else(|| default.into());
+-        environment.insert(name.to_owned(), value);
++        environment.insert(name.to_owned(), value.into());
+     }
+ }
+diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
+index 038a3370ecf785192f2d081f27c9bbe8862a6006..015f935bd47b434225847ceb16a20387ccf368bb 100644
+--- a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
++++ b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
+@@ -1,5 +1,18 @@
+ //! Validation and environment behavior before process admission.
+ use super::*;
++trait EnvironmentText {
++    fn environment_text(&self) -> Option<&str>;
++}
++impl EnvironmentText for String {
++    fn environment_text(&self) -> Option<&str> {
++        Some(self.as_str())
++    }
++}
++impl EnvironmentText for std::ffi::OsString {
++    fn environment_text(&self) -> Option<&str> {
++        self.to_str()
++    }
++}
+ fn request(state: &Path) -> ShellExecRequest {
+     ShellExecRequest {
+         process: tinybox_bus::ResourceId("p".into()),
+@@ -64,7 +77,10 @@ fn approved_environment_overrides_preserve_custom_temporary_directory_and_remove
+         .insert("SHELLOPTS".into(), "errexit".into());
+     let shell = ShellContext::prepare(request, state.path(), &resolved)?;
+     assert_eq!(
+-        shell.environment.get("TMPDIR").map(String::as_str),
++        shell
++            .environment
++            .get("TMPDIR")
++            .and_then(|value| value.environment_text()),
+         Some("approved-temporary-location")
+     );
+     #[cfg(unix)]
+@@ -125,6 +141,7 @@ async fn native_shell_jail_adds_owned_scratch_and_refuses_unsupported_constraint
+     request.jail = Some(tinybox_bus::NativeJailConfig {
+         read_only: vec![],
+         read_write: vec![],
++        unix_paths: tinybox_bus::UnixPathGrants::default(),
+         allow_net: false,
+         allow_subprocess: false,
+         enforcement: tinybox_bus::JailEnforcement::Enforced,
+@@ -256,20 +273,136 @@ fn native_shell_preserves_resource_environment_and_request_overrides()
+         .insert("OVERRIDE".into(), "request".into());
+     let shell = ShellContext::prepare(request, state.path(), &resolved)?;
+     assert_eq!(
+-        shell.environment.get("RESOURCE_CONFIG").map(String::as_str),
++        shell
++            .environment
++            .get("RESOURCE_CONFIG")
++            .and_then(|value| value.environment_text()),
+         Some("preserved")
+     );
+     assert_eq!(
+-        shell.environment.get("TMPDIR").map(String::as_str),
++        shell
++            .environment
++            .get("TMPDIR")
++            .and_then(|value| value.environment_text()),
+         Some("resource-temp")
+     );
+     assert_eq!(
+-        shell.environment.get("OVERRIDE").map(String::as_str),
++        shell
++            .environment
++            .get("OVERRIDE")
++            .and_then(|value| value.environment_text()),
+         Some("request")
+     );
+     Ok(())
+ }
+ 
++#[cfg(unix)]
++#[test]
++fn unix_toolchain_environment_is_preserved_for_the_shell_child()
++-> std::result::Result<(), Box<dyn std::error::Error>> {
++    use std::os::unix::ffi::{OsStrExt, OsStringExt};
++
++    if let Some(mode) = std::env::var_os("TINYBOX_NATIVE_ENV_TEST") {
++        let state = tempfile::tempdir()?;
++        let mut request = request(state.path());
++        request.shell.command = "printf '%s|%s|%s' \"${RUSTUP_HOME-unset}\" \"${CARGO_HOME-unset}\" \"${TINYBOX_UNAPPROVED-unset}\"".into();
++        let mut resolved = tinybox_core::ExecRequest::new(["unused"]);
++        let expected = match mode.to_str() {
++            Some("raw") => {
++                let rustup = std::env::var_os("RUSTUP_HOME")
++                    .ok_or_else(|| std::io::Error::other("child fixture is missing RUSTUP_HOME"))?;
++                let cargo = std::env::var_os("CARGO_HOME")
++                    .ok_or_else(|| std::io::Error::other("child fixture is missing CARGO_HOME"))?;
++                [rustup.as_bytes(), b"|", cargo.as_bytes(), b"|unset"].concat()
++            }
++            Some("overrides") => {
++                resolved
++                    .env
++                    .insert("RUSTUP_HOME".into(), "resource-rustup".into());
++                resolved
++                    .env
++                    .insert("CARGO_HOME".into(), "resource-cargo".into());
++                request
++                    .extra_env
++                    .insert("RUSTUP_HOME".into(), "request-rustup".into());
++                request
++                    .extra_env
++                    .insert("CARGO_HOME".into(), "request-cargo".into());
++                b"request-rustup|request-cargo|unset".to_vec()
++            }
++            Some("empty") => b"unset|unset|unset".to_vec(),
++            _ => return Err("unknown native shell child fixture mode".into()),
++        };
++        assert!(request.extra_env.get("TINYBOX_UNAPPROVED").is_none());
++        assert!(std::env::var_os("TINYBOX_UNAPPROVED").is_some());
++        let shell = ShellContext::prepare(request, state.path(), &resolved)?;
++        let runtime = tokio::runtime::Builder::new_current_thread()
++            .enable_all()
++            .build()?;
++        let output = runtime.block_on(async {
++            let output = shell
++                .run(
++                    &resolved,
++                    Arc::new(super::super::output::OutputJournal::default()),
++                )
++                .await?;
++            shell.drain().await?;
++            Ok::<_, tinybox_core::Error>(output)
++        })?;
++        assert_eq!(output.exit_code, 0);
++        assert_eq!(output.stdout, expected);
++        return Ok(());
++    }
++
++    fn run_child(
++        mode: &str,
++        rustup: std::ffi::OsString,
++        cargo: std::ffi::OsString,
++    ) -> std::io::Result<std::process::Output> {
++        let mut command = std::process::Command::new(std::env::current_exe()?);
++        command
++            .args([
++                "unix_toolchain_environment_is_preserved_for_the_shell_child",
++                "--nocapture",
++            ])
++            .env_clear()
++            .env("TINYBOX_NATIVE_ENV_TEST", mode)
++            .env("TINYBOX_UNAPPROVED", "ambient-secret")
++            .env("RUSTUP_HOME", rustup)
++            .env("CARGO_HOME", cargo);
++        if let Some(path) = std::env::var_os("PATH") {
++            command.env("PATH", path);
++        }
++        command.output()
++    }
++
++    for (mode, rustup, cargo) in [
++        (
++            "raw",
++            std::ffi::OsString::from_vec(b"/tmp/rustup-\xff".to_vec()),
++            std::ffi::OsString::from_vec(b"/tmp/cargo-\xfe".to_vec()),
++        ),
++        (
++            "overrides",
++            "/tmp/default-rustup".into(),
++            "/tmp/default-cargo".into(),
++        ),
++        ("empty", "".into(), "".into()),
++    ] {
++        let output = run_child(mode, rustup, cargo)?;
++        assert!(
++            String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
++            "native shell child fixture {mode} did not run exactly one matching test: {}",
++            String::from_utf8_lossy(&output.stdout)
++        );
++        assert!(
++            output.status.success(),
++            "native shell child fixture {mode} failed: {}",
++            String::from_utf8_lossy(&output.stderr)
++        );
++    }
++    Ok(())
++}
+ #[test]
+ fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_overrides()
+ -> std::result::Result<(), Box<dyn std::error::Error>> {
+@@ -288,7 +421,7 @@ fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_override
+         shell
+             .environment
+             .get("PYTHONIOENCODING")
+-            .map(String::as_str),
++            .and_then(|value| value.environment_text()),
+         Some("latin-1")
+     );
+     Ok(())
+diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/types.rs b/crates/tinybox-module/src/tinybus_module/native_shell/types.rs
+index e2c6c408190aca3bfed404988d26c8da8dd7e679..08a118b75f9ce1097898759c89558bf4c7c4d767 100644
+--- a/crates/tinybox-module/src/tinybus_module/native_shell/types.rs
++++ b/crates/tinybox-module/src/tinybus_module/native_shell/types.rs
+@@ -2,7 +2,7 @@
+ use tinybox_bus::ShellExecRequest;
+ pub(in crate::tinybus_module) struct ShellContext {
+     pub(super) request: ShellExecRequest,
+-    pub(super) environment: std::collections::BTreeMap<String, String>,
++    pub(super) environment: std::collections::BTreeMap<String, std::ffi::OsString>,
+     pub(super) scratch: std::sync::Arc<std::sync::Mutex<Option<tempfile::TempDir>>>,
+     pub(super) scratch_cleanup_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+     pub(super) host: ShellHost,
+diff --git a/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs b/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs
+index 3b11b765b373e0a9187ff3724b76f20dcc676825..09740e85b88ca2ea3831b899cc7b157a69ce47da 100644
+--- a/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs
++++ b/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs
+@@ -283,6 +283,7 @@ async fn jailed_start_rejects_missing_grants_without_consuming_reservation() ->
+     let config = tinybox_bus::NativeJailConfig {
+         read_only: vec!["/tinybox-nonexistent-grant-fixture".into()],
+         read_write: vec![],
++        unix_paths: tinybox_bus::UnixPathGrants::default(),
+         allow_net: true,
+         allow_subprocess: true,
+         enforcement: tinybox_bus::JailEnforcement::Declared,
+diff --git a/crates/tinybox-module/tests/grants_manifest_e2e.rs b/crates/tinybox-module/tests/grants_manifest_e2e.rs
+index 446216287ae0221753f36d9ec5cdc2f49af71eb5..05147fb4206455e37e49413705ba302d2524ca04 100644
+--- a/crates/tinybox-module/tests/grants_manifest_e2e.rs
++++ b/crates/tinybox-module/tests/grants_manifest_e2e.rs
+@@ -79,6 +79,7 @@ async fn verify_discovery(proxy: &tinybus::Proxy) -> Result<(), Box<dyn std::err
+                     ..tinybox_bus::LocalGrantConfig::default()
+                 },
+                 protected: tinybox_bus::ProtectedPaths::default(),
++                allow_unix_paths: false,
+             },),
+         )
+         .await?;
+@@ -146,6 +147,7 @@ async fn verify_discovery(proxy: &tinybus::Proxy) -> Result<(), Box<dyn std::err
+                     home: Some(home.path().to_str().ok_or("home is not UTF-8")?.into()),
+                     config: tinybox_bus::LocalGrantConfig::default(),
+                     protected: tinybox_bus::ProtectedPaths::default(),
++                    allow_unix_paths: false,
+                 },),
+             )
+             .await;
+diff --git a/crates/tinybox-module/tests/module_e2e.rs b/crates/tinybox-module/tests/module_e2e.rs
+index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f93c94ca3 100644
+--- a/crates/tinybox-module/tests/module_e2e.rs
++++ b/crates/tinybox-module/tests/module_e2e.rs
+@@ -666,6 +666,7 @@ async fn verify_native_jail(
+             .map(str::to_owned)
+             .collect(),
+         read_write: vec![],
++        unix_paths: tinybox_bus::UnixPathGrants::default(),
+         allow_net: true,
+         allow_subprocess: true,
+         enforcement: JailEnforcement::Enforced,
+@@ -802,6 +803,7 @@ async fn verify_docker_rejects_local_jail(
+                 NativeJailConfig {
+                     read_only: Vec::new(),
+                     read_write: Vec::new(),
++                    unix_paths: tinybox_bus::UnixPathGrants::default(),
+                     allow_net: true,
+                     allow_subprocess: true,
+                     enforcement: JailEnforcement::Declared,
+diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0a25b1b121678fc35601109383e150e14bd76cfa
+--- /dev/null
++++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
+@@ -0,0 +1,734 @@
++//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
++
++use std::{
++    ffi::OsString,
++    fs,
++    path::{Path, PathBuf},
++    process::Command,
++    time::Duration,
++};
++use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory::MemoryBus};
++
++const TEST_NAME: &str = "compiled_module_discovers_and_runs_custom_rust_homes";
++const CHILD_MODE: &str = "TINYBOX_RUST_HOMES_CHILD";
++
++type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn compiled_module_discovers_and_runs_custom_rust_homes() -> TestResult<()> {
++    if let Some(mode) = std::env::var_os(CHILD_MODE) {
++        return run_module_child(mode.to_str().ok_or("child mode is not UTF-8")?).await;
++    }
++
++    // This dynamic module build finishes before any child receives custom Cargo homes.
++    let artifact = compiled_artifact()?;
++    let utf8 = Fixture::new("utf8", None)?;
++    run_child(&utf8, &artifact, "utf8", None)?;
++
++    #[cfg(unix)]
++    {
++        let bytes = Fixture::new("bytes", None)?;
++        run_child(&bytes, &artifact, "bytes", None)?;
++    }
++
++    #[cfg(target_os = "linux")]
++    {
++        let (rustup_home, rustup_proxy, toolchain) = installed_toolchain()?;
++        let local = Fixture::new("local", Some(&rustup_home))?;
++        local.install_rustup_proxies(&rustup_proxy)?;
++        run_child(&local, &artifact, "local", Some(&toolchain))?;
++    }
++
++    Ok(())
++}
++
++fn run_child(
++    fixture: &Fixture,
++    artifact: &Path,
++    mode: &str,
++    toolchain: Option<&str>,
++) -> TestResult<()> {
++    let mut child = Command::new(std::env::current_exe()?);
++    child.args([TEST_NAME, "--nocapture"]).env_clear();
++
++    for name in [
++        "PATH",
++        "LD_LIBRARY_PATH",
++        "SystemRoot",
++        "WINDIR",
++        "COMSPEC",
++        "PATHEXT",
++        "USERPROFILE",
++        "APPDATA",
++        "LOCALAPPDATA",
++        "ProgramFiles",
++        "ProgramFiles(x86)",
++        "ProgramW6432",
++        "TEMP",
++        "TMP",
++    ] {
++        if let Some(value) = std::env::var_os(name) {
++            child.env(name, value);
++        }
++    }
++
++    child
++        .env(CHILD_MODE, mode)
++        .env("TINYBOX_E2E_ARTIFACT", artifact)
++        .env("TINYBOX_E2E_HOME", &fixture.home)
++        .env("TINYBOX_E2E_WORKSPACE", &fixture.workspace)
++        .env("TINYBOX_E2E_STATE", &fixture.state)
++        .env("TINYBOX_E2E_OUTSIDE", &fixture.outside_sentinel)
++        .env("RUSTUP_HOME", &fixture.rustup_home)
++        .env("CARGO_HOME", &fixture.cargo_home);
++    if let Some(toolchain) = toolchain {
++        child.env("TINYBOX_SELECTED_TOOLCHAIN", toolchain);
++    }
++
++    let output = child.output()?;
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    assert!(
++        stdout.contains("running 1 test"),
++        "child did not run exactly one matching test for {mode}: {stdout}\n{stderr}"
++    );
++    assert!(
++        stdout.contains(&format!("test {TEST_NAME} ... ok")),
++        "child test result was absent for {mode}: {stdout}\n{stderr}"
++    );
++    assert!(
++        output.status.success(),
++        "compiled-module child failed for {mode}: {stdout}\n{stderr}"
++    );
++    Ok(())
++}
++
++struct Fixture {
++    _root: tempfile::TempDir,
++    rustup_home: PathBuf,
++    cargo_home: PathBuf,
++    home: PathBuf,
++    workspace: PathBuf,
++    state: PathBuf,
++    outside_sentinel: PathBuf,
++}
++
++impl Fixture {
++    fn new(kind: &str, rustup_target: Option<&Path>) -> TestResult<Self> {
++        let root = tempfile::tempdir()?;
++        let (rustup_leaf, cargo_leaf) = match kind {
++            "utf8" => (
++                OsString::from("rustup-用户"),
++                OsString::from("cargo-данные"),
++            ),
++            #[cfg(unix)]
++            "bytes" => (unix_name(b"rustup-\xff"), unix_name(b"cargo-\xfe")),
++            #[cfg(unix)]
++            "local" => (unix_name(b"rustup-\xfd"), unix_name(b"cargo-\xfc")),
++            _ => return Err("unknown Rust homes fixture".into()),
++        };
++        let rustup_home = root.path().join(rustup_leaf);
++        let cargo_home = root.path().join(cargo_leaf);
++        if let Some(target) = rustup_target {
++            #[cfg(unix)]
++            std::os::unix::fs::symlink(target, &rustup_home)?;
++            #[cfg(not(unix))]
++            return Err("Rustup home symlink fixture requires Unix".into());
++        } else {
++            fs::create_dir_all(&rustup_home)?;
++            fs::write(rustup_home.join("settings.toml"), "version = 12\n")?;
++            fs::create_dir_all(rustup_home.join("toolchains"))?;
++        }
++        fs::create_dir_all(cargo_home.join("bin"))?;
++        fs::create_dir_all(cargo_home.join("registry"))?;
++        fs::create_dir_all(cargo_home.join("git"))?;
++        fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n")?;
++        fs::write(cargo_home.join("env"), "TINYBOX_FIXTURE=1\n")?;
++        fs::write(cargo_home.join("registry/cache-fixture"), "cache marker\n")?;
++        fs::write(cargo_home.join("git/cache-fixture"), "git marker\n")?;
++        fs::write(
++            cargo_home.join("credentials.toml"),
++            "credential fixture marker\n",
++        )?;
++
++        let home = root.path().join("operator-home");
++        let workspace = root.path().join("workspace");
++        let state = root.path().join("state");
++        let temp = root.path().join("temporary");
++        fs::create_dir_all(&home)?;
++        fs::create_dir_all(&workspace)?;
++        fs::create_dir_all(&state)?;
++        fs::create_dir_all(temp)?;
++        let outside_sentinel = root.path().join("outside-sentinel");
++        fs::write(&outside_sentinel, "outside fixture marker\n")?;
++
++        Ok(Self {
++            _root: root,
++            rustup_home,
++            cargo_home,
++            home,
++            workspace,
++            state,
++            outside_sentinel,
++        })
++    }
++
++    #[cfg(target_os = "linux")]
++    fn install_rustup_proxies(&self, rustup: &Path) -> TestResult<()> {
++        for name in ["rustup", "cargo", "rustc"] {
++            fs::copy(rustup, self.cargo_home.join("bin").join(name))?;
++        }
++        Ok(())
++    }
++}
++
++#[cfg(unix)]
++fn unix_name(bytes: &[u8]) -> OsString {
++    use std::os::unix::ffi::OsStringExt;
++    OsString::from_vec(bytes.to_vec())
++}
++
++#[cfg(target_os = "linux")]
++fn installed_toolchain() -> TestResult<(PathBuf, PathBuf, String)> {
++    let home = std::env::var_os("HOME")
++        .or_else(|| std::env::var_os("USERPROFILE"))
++        .map(PathBuf::from)
++        .ok_or("host home is unavailable before child environment seeding")?;
++    let rustup_home = std::env::var_os("RUSTUP_HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| home.join(".rustup"));
++    if !rustup_home.join("settings.toml").is_file() || !rustup_home.join("toolchains").is_dir() {
++        return Err("installed Rustup home or toolchains are unavailable".into());
++    }
++
++    let cargo_home = std::env::var_os("CARGO_HOME")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| home.join(".cargo"));
++    let mut candidates = vec![cargo_home.join("bin/rustup")];
++    if let Some(path) = std::env::var_os("PATH") {
++        candidates.extend(std::env::split_paths(&path).map(|directory| directory.join("rustup")));
++    }
++    let rustup = candidates
++        .into_iter()
++        .find(|candidate| candidate.is_file())
++        .ok_or("installed Rustup multicall executable was not found")?
++        .canonicalize()?;
++    let status = Command::new(&rustup)
++        .args(["show", "active-toolchain"])
++        .output()?;
++    if !status.status.success() {
++        return Err(format!(
++            "installed rustup could not identify the active toolchain: {}",
++            String::from_utf8_lossy(&status.stderr)
++        )
++        .into());
++    }
++    let toolchain = String::from_utf8(status.stdout)?
++        .split_whitespace()
++        .next()
++        .ok_or("installed rustup reported no active toolchain")?
++        .to_owned();
++    Ok((rustup_home.canonicalize()?, rustup, toolchain))
++}
++
++async fn run_module_child(mode: &str) -> TestResult<()> {
++    let artifact = env_path("TINYBOX_E2E_ARTIFACT")?;
++    let home = env_path("TINYBOX_E2E_HOME")?;
++    let workspace = env_path("TINYBOX_E2E_WORKSPACE")?;
++    let state = env_path("TINYBOX_E2E_STATE")?;
++    let outside = env_path("TINYBOX_E2E_OUTSIDE")?;
++    let rustup_home = env_path("RUSTUP_HOME")?;
++    let cargo_home = env_path("CARGO_HOME")?;
++
++    // Stage the production artifact through the same admission path as the existing proof.
++    let staged = tempfile::Builder::new()
++        .prefix("rust-homes-module-")
++        .tempdir_in(artifact.parent().ok_or("compiled artifact has no parent")?)?;
++    #[cfg(windows)]
++    secure_staging_directory(staged.path())?;
++    let staged_artifact = staged.path().join(
++        artifact
++            .file_name()
++            .ok_or("compiled artifact has no filename")?,
++    );
++    fs::copy(&artifact, &staged_artifact)?;
++
++    let bus = MemoryBus::new();
++    let broker = Broker::new();
++    let broker_task = broker.spawn(bus.clone());
++    let modules = ModuleHost::new(broker);
++    let loaded = modules.load_file(&staged_artifact)?;
++    let declared: Vec<_> = loaded
++        .manifest
++        .provides
++        .iter()
++        .flat_map(|interface| interface.methods.iter())
++        .map(tinybus::MemberName::as_str)
++        .collect();
++    assert_eq!(declared, tinybox_bus::METHODS);
++
++    let client = Connection::connect(bus.connect().await?).await?;
++    tokio::time::timeout(Duration::from_secs(5), async {
++        loop {
++            if client
++                .list_names()
++                .await?
++                .iter()
++                .any(|name| name.as_str() == tinybox_bus::INTERFACE)
++            {
++                return Ok::<(), tinybus::Error>(());
++            }
++            tokio::task::yield_now().await;
++        }
++    })
++    .await??;
++    let proxy = client.proxy(
++        tinybox_bus::INTERFACE,
++        tinybox_bus::OBJECT_PATH,
++        tinybox_bus::INTERFACE,
++    )?;
++
++    let capabilities: tinybox_bus::ModuleCapabilities = proxy.call("Capabilities", ()).await?;
++    assert_eq!(capabilities.contract_version, (1, 19));
++    match mode {
++        "utf8" => {
++            let grants = resolve_grants(&proxy, &home, false).await?;
++            assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
++            run_environment_shell(&proxy, &workspace, &state).await?;
++        }
++        "bytes" => {
++            let grants = resolve_grants(&proxy, &home, true).await?;
++            assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
++            let legacy = proxy
++                .call::<tinybox_bus::LocalGrants>(
++                    "ResolveLocalGrants",
++                    (grant_request(&home, false)?,),
++                )
++                .await;
++            assert!(
++                matches!(legacy, Err(tinybus::Error::MethodFailed { ref name, .. }) if name.as_str() == tinybox_bus::INVALID_FILE_PATH),
++                "legacy grant request did not refuse non-UTF-8 paths: {legacy:?}"
++            );
++            run_environment_shell(&proxy, &workspace, &state).await?;
++        }
++        "local" => {
++            let grants = resolve_grants(&proxy, &home, true).await?;
++            assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
++            run_environment_shell(&proxy, &workspace, &state).await?;
++            let toolchain = std::env::var("TINYBOX_SELECTED_TOOLCHAIN")?;
++            run_local_shell(&proxy, &workspace, &state, &outside, grants, &toolchain).await?;
++        }
++        _ => return Err("unknown compiled-module fixture mode".into()),
++    }
++
++    proxy.call::<()>("Shutdown", ()).await?;
++    broker_task.abort();
++    Ok(())
++}
++
++fn env_path(name: &str) -> TestResult<PathBuf> {
++    std::env::var_os(name)
++        .map(PathBuf::from)
++        .ok_or_else(|| format!("missing fixture environment value {name}").into())
++}
++
++fn grant_request(
++    home: &Path,
++    allow_unix_paths: bool,
++) -> TestResult<tinybox_bus::ResolveLocalGrantsRequest> {
++    Ok(tinybox_bus::ResolveLocalGrantsRequest {
++        home: Some(
++            home.to_str()
++                .ok_or("fixture home path is not UTF-8")?
++                .into(),
++        ),
++        config: tinybox_bus::LocalGrantConfig {
++            toolchain_homes: true,
++            ..tinybox_bus::LocalGrantConfig::default()
++        },
++        protected: tinybox_bus::ProtectedPaths {
++            components: vec!["credentials.toml".into()],
++            ..tinybox_bus::ProtectedPaths::default()
++        },
++        allow_unix_paths,
++    })
++}
++
++async fn resolve_grants(
++    proxy: &tinybus::Proxy,
++    home: &Path,
++    allow_unix_paths: bool,
++) -> TestResult<tinybox_bus::LocalGrants> {
++    Ok(proxy
++        .call(
++            "ResolveLocalGrants",
++            (grant_request(home, allow_unix_paths)?,),
++        )
++        .await?)
++}
++
++fn assert_selected_entries(
++    grants: &tinybox_bus::LocalGrants,
++    rustup_home: &Path,
++    cargo_home: &Path,
++) -> TestResult<()> {
++    assert!(grants.read_write.is_empty());
++    assert!(grants.unix_paths.read_write.is_empty());
++
++    assert!(
++        grant_contains(grants, rustup_home)?,
++        "custom Rustup home was not discovered: {}",
++        rustup_home.display()
++    );
++    assert!(
++        !grant_contains_rw(grants, rustup_home)?,
++        "custom Rustup home was writable: {}",
++        rustup_home.display()
++    );
++
++    for entry in ["bin", "config.toml", "env", "registry", "git"] {
++        let path = cargo_home.join(entry);
++        assert!(
++            grant_contains(grants, &path)?,
++            "selected Cargo entry {entry} was not read-only"
++        );
++        assert!(
++            !grant_contains_rw(grants, &path)?,
++            "selected Cargo entry {entry} was writable"
++        );
++    }
++
++    let credentials = cargo_home.join("credentials.toml");
++    assert!(
++        !grant_contains(grants, cargo_home)?,
++        "the whole Cargo home was granted"
++    );
++    assert!(
++        !grant_contains(grants, &credentials)?,
++        "Cargo credentials were granted"
++    );
++    Ok(())
++}
++
++fn grant_contains(grants: &tinybox_bus::LocalGrants, path: &Path) -> TestResult<bool> {
++    let canonical = path.canonicalize()?;
++    if canonical.to_str().is_some()
++        && grants
++            .read_only
++            .iter()
++            .any(|entry| Path::new(entry) == canonical)
++    {
++        return Ok(true);
++    }
++    #[cfg(unix)]
++    {
++        use std::os::unix::ffi::OsStrExt;
++        let bytes = canonical.as_os_str().as_bytes();
++        Ok(grants
++            .unix_paths
++            .read_only
++            .iter()
++            .any(|entry| entry == bytes))
++    }
++    #[cfg(not(unix))]
++    {
++        Ok(false)
++    }
++}
++
++fn grant_contains_rw(grants: &tinybox_bus::LocalGrants, path: &Path) -> TestResult<bool> {
++    let canonical = path.canonicalize()?;
++    if canonical.to_str().is_some()
++        && grants
++            .read_write
++            .iter()
++            .any(|entry| Path::new(entry) == canonical)
++    {
++        return Ok(true);
++    }
++    #[cfg(unix)]
++    {
++        use std::os::unix::ffi::OsStrExt;
++        let bytes = canonical.as_os_str().as_bytes();
++        Ok(grants
++            .unix_paths
++            .read_write
++            .iter()
++            .any(|entry| entry == bytes))
++    }
++    #[cfg(not(unix))]
++    {
++        Ok(false)
++    }
++}
++
++async fn run_environment_shell(
++    proxy: &tinybus::Proxy,
++    workspace: &Path,
++    state: &Path,
++) -> TestResult<()> {
++    #[cfg(unix)]
++    let command = r#"printf '%s\000%s' "$RUSTUP_HOME" "$CARGO_HOME""#;
++    #[cfg(windows)]
++    let command = "@chcp 65001 >NUL & @echo %RUSTUP_HOME%&@echo %CARGO_HOME%";
++    let output = run_shell(proxy, workspace, state, command, None, Default::default()).await?;
++
++    #[cfg(unix)]
++    {
++        use std::os::unix::ffi::OsStrExt;
++        let rustup = std::env::var_os("RUSTUP_HOME").ok_or("child RUSTUP_HOME is missing")?;
++        let cargo = std::env::var_os("CARGO_HOME").ok_or("child CARGO_HOME is missing")?;
++        let expected = [
++            rustup.as_os_str().as_bytes(),
++            b"\0",
++            cargo.as_os_str().as_bytes(),
++        ]
++        .concat();
++        assert_eq!(output, expected, "native shell changed Rust home bytes");
++    }
++    #[cfg(windows)]
++    {
++        let rustup = std::env::var_os("RUSTUP_HOME").ok_or("child RUSTUP_HOME is missing")?;
++        let cargo = std::env::var_os("CARGO_HOME").ok_or("child CARGO_HOME is missing")?;
++        let rustup = rustup
++            .to_str()
++            .ok_or("UTF-8 fixture RUSTUP_HOME changed encoding")?;
++        let cargo = cargo
++            .to_str()
++            .ok_or("UTF-8 fixture CARGO_HOME changed encoding")?;
++        let output = String::from_utf8(output)?;
++        assert_eq!(output.lines().collect::<Vec<_>>(), [rustup, cargo]);
++    }
++    Ok(())
++}
++
++#[cfg(target_os = "linux")]
++async fn run_local_shell(
++    proxy: &tinybus::Proxy,
++    workspace: &Path,
++    state: &Path,
++    outside: &Path,
++    grants: tinybox_bus::LocalGrants,
++    toolchain: &str,
++) -> TestResult<()> {
++    let status: tinybox_bus::JailStatus = proxy.call("JailStatus", ()).await?;
++    assert!(
++        status.available && status.filesystem == "enforced",
++        "Linux Local proof requires the default backend's enforced filesystem: {status:?}"
++    );
++    let mut read_only = grants.read_only.clone();
++    read_only.extend(
++        ["/usr", "/bin", "/lib", "/lib64", "/dev"]
++            .into_iter()
++            .filter(|path| Path::new(path).exists())
++            .map(str::to_owned),
++    );
++    let jail = tinybox_bus::NativeJailConfig {
++        read_only,
++        read_write: grants.read_write.clone(),
++        unix_paths: grants.unix_paths.clone(),
++        allow_net: true,
++        allow_subprocess: true,
++        enforcement: tinybox_bus::JailEnforcement::Enforced,
++        require_process_isolation: false,
++    };
++    let extra_env = [
++        (
++            "OUTSIDE_SENTINEL".to_owned(),
++            outside
++                .to_str()
++                .ok_or("outside fixture is not UTF-8")?
++                .to_owned(),
++        ),
++        ("RUSTUP_TOOLCHAIN".to_owned(), toolchain.to_owned()),
++    ]
++    .into_iter()
++    .collect();
++
++    let command = r#"set -u
++cat "$RUSTUP_HOME/settings.toml" >/dev/null || exit 30
++cat "$CARGO_HOME/config.toml" >/dev/null || exit 31
++cat "$CARGO_HOME/env" >/dev/null || exit 32
++cat "$CARGO_HOME/registry/cache-fixture" >/dev/null || exit 33
++cat "$CARGO_HOME/git/cache-fixture" >/dev/null || exit 34
++"$CARGO_HOME/bin/cargo" --version || exit 35
++"$CARGO_HOME/bin/rustc" --version || exit 36
++if printf denied > "$RUSTUP_HOME/.tinybox-write-probe" 2>/dev/null; then exit 41; fi
++if printf denied > "$CARGO_HOME/config.toml" 2>/dev/null; then exit 42; fi
++if printf denied > "$CARGO_HOME/registry/write-probe" 2>/dev/null; then exit 43; fi
++if printf denied > "$CARGO_HOME/git/write-probe" 2>/dev/null; then exit 44; fi
++if cat "$CARGO_HOME/credentials.toml" >/dev/null 2>&1; then exit 45; fi
++if cat "$OUTSIDE_SENTINEL" >/dev/null 2>&1; then exit 46; fi
++printf workspace-write > rust-homes-workspace-check
++printf rust-homes-local-ok"#;
++    let output = run_shell(proxy, workspace, state, command, Some(jail), extra_env).await?;
++    let stdout = String::from_utf8(output)?;
++    assert!(
++        stdout.contains("cargo "),
++        "cargo --version did not complete: {stdout}"
++    );
++    assert!(
++        stdout.contains("rustc "),
++        "rustc --version did not complete: {stdout}"
++    );
++    assert!(
++        stdout.ends_with("rust-homes-local-ok"),
++        "Local toolchain checks did not reach their final boundary marker: {stdout}"
++    );
++    assert_eq!(
++        fs::read(workspace.join("rust-homes-workspace-check"))?,
++        b"workspace-write"
++    );
++    assert!(
++        !PathBuf::from(std::env::var_os("RUSTUP_HOME").ok_or("missing RUSTUP_HOME")?)
++            .join(".tinybox-write-probe")
++            .exists()
++    );
++    assert!(
++        !PathBuf::from(std::env::var_os("CARGO_HOME").ok_or("missing CARGO_HOME")?)
++            .join("registry/write-probe")
++            .exists()
++    );
++    assert!(
++        !PathBuf::from(std::env::var_os("CARGO_HOME").ok_or("missing CARGO_HOME")?)
++            .join("git/write-probe")
++            .exists()
++    );
++    Ok(())
++}
++
++async fn run_shell(
++    proxy: &tinybus::Proxy,
++    workspace: &Path,
++    state: &Path,
++    command: &str,
++    jail: Option<tinybox_bus::NativeJailConfig>,
++    extra_env: std::collections::BTreeMap<String, String>,
++) -> TestResult<Vec<u8>> {
++    let workspace_text = workspace.to_str().ok_or("workspace path is not UTF-8")?;
++    let resource: tinybox_bus::ResourceId = proxy
++        .call("Reserve", (tinybox_bus::ReserveRequest::Resource,))
++        .await?;
++    let _: tinybox_bus::ResourceInfo = proxy
++        .call(
++            "Create",
++            (tinybox_bus::CreateRequest {
++                resource: resource.clone(),
++                backend: "passthrough".into(),
++                workspace: tinybox_bus::Workspace::Directory(workspace_text.into()),
++                ..Default::default()
++            },),
++        )
++        .await?;
++    let process: tinybox_bus::ResourceId = proxy
++        .call(
++            "Reserve",
++            (tinybox_bus::ReserveRequest::Process(resource.clone()),),
++        )
++        .await?;
++    let request = tinybox_bus::ShellExecRequest {
++        process,
++        resource: resource.clone(),
++        shell: tinybox_bus::SelectShellRequest {
++            command: command.into(),
++            preserve_pipeline_status: false,
++            runtime_path: None,
++            python_utf8: false,
++        },
++        cwd: Some(workspace_text.into()),
++        extra_env,
++        state_dir: state.to_str().ok_or("state directory is not UTF-8")?.into(),
++        timeout_ms: 90_000,
++        stdin: None,
++        jail,
++        hide_window: false,
++    };
++    let running: tinybox_bus::ProcessRef = proxy.call("StartNativeShellExec", (request,)).await?;
++    let batch = tokio::time::timeout(Duration::from_secs(100), async {
++        loop {
++            let batch: tinybox_bus::OutputBatch =
++                proxy.call("ReadOutput", (running.clone(), 0_u64)).await?;
++            if batch.state != tinybox_bus::ExecutionState::Running {
++                return Ok::<_, tinybus::Error>(batch);
++            }
++            tokio::task::yield_now().await;
++        }
++    })
++    .await??;
++    assert_eq!(
++        batch.state,
++        tinybox_bus::ExecutionState::Exited { exit_code: 0 },
++        "native shell exited with stderr {:?}",
++        batch
++            .chunks
++            .iter()
++            .filter(|chunk| chunk.stream == tinybox_bus::OutputStream::Stderr)
++            .flat_map(|chunk| chunk.bytes.iter().copied())
++            .collect::<Vec<_>>()
++    );
++    let output = batch
++        .chunks
++        .iter()
++        .filter(|chunk| chunk.stream == tinybox_bus::OutputStream::Stdout)
++        .flat_map(|chunk| chunk.bytes.iter().copied())
++        .collect();
++    proxy.call::<()>("ReleaseOutput", (running,)).await?;
++    proxy.call::<()>("Close", (resource,)).await?;
++    Ok(output)
++}
++
++fn compiled_artifact() -> TestResult<PathBuf> {
++    let filename = format!(
++        "{}tinybox{}",
++        std::env::consts::DLL_PREFIX,
++        std::env::consts::DLL_SUFFIX
++    );
++    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/module-dynamic-proof");
++    let status = Command::new(env!("CARGO"))
++        .args([
++            "build",
++            "--locked",
++            "--offline",
++            "-p",
++            "tinybox-module",
++            "--no-default-features",
++            "--lib",
++        ])
++        .arg("--manifest-path")
++        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
++        .arg("--target-dir")
++        .arg(&target)
++        .status()?;
++    assert!(
++        status.success(),
++        "dynamic TinyBox module build failed before child env seeding: {status}"
++    );
++    Ok(target.join("debug").join(filename))
++}
++#[cfg(windows)]
++fn secure_staging_directory(path: &Path) -> TestResult<()> {
++    let identity = Command::new("powershell")
++        .args([
++            "-NoProfile",
++            "-NonInteractive",
++            "-Command",
++            "[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
++        ])
++        .output()?;
++    assert!(
++        identity.status.success(),
++        "current-user SID query failed: {identity:?}"
++    );
++    let sid = String::from_utf8(identity.stdout)?;
++    let grant = format!("*{}:(OI)(CI)F", sid.trim());
++    let acl = Command::new("icacls")
++        .arg(path)
++        .args(["/inheritance:r", "/grant:r"])
++        .arg(grant)
++        .output()?;
++    assert!(
++        acl.status.success(),
++        "private module staging ACL failed: {acl:?}"
++    );
++    Ok(())
++}
+diff --git a/docs/plans/local-grants.md b/docs/plans/local-grants.md
+index badca58b88ebcf10478e3df949833fe63509a02d..9e560482dc21302b5bcefbc06627f6dd4fcb06f7 100644
+--- a/docs/plans/local-grants.md
++++ b/docs/plans/local-grants.md
+@@ -25,3 +25,21 @@ and verification for the existing discovery slice.
+ Discovery implementation is complete subject to review and recorded validation.
+ Execution, released-module consumption and OpenHuman adapters are subsequent
+ slices and are not represented as delivered by this prerequisite.
++
++## Custom Rust homes and Unix grant transport (contract 1.19)
++
++1. Reproduce custom UTF8 and Unix-byte Rust home discovery failures against
++   untouched production using subprocess-seeded public API tests. Reproduce
++   missing toolchain environment in an actual shell child the same way.
++2. Discover configured absolute Rustup and Cargo homes as OS paths. Keep
++   Rustup and selected Cargo state read-only, preserve credential floors and
++   reserve aliases before admitting writable extras.
++3. Snapshot nonempty RUSTUP_HOME and CARGO_HOME as OS values for native shell
++   execution, with approved UTF8 overrides retaining precedence.
++4. Add opt-in byte grant transport and strict canonical decoding. Cover default
++   wire compatibility, malformed paths, combined bounds and approved flags.
++5. Exercise the production-admitted dynamic module with UTF8 and Unix-byte
++   homes, actual Cargo/Rust commands and Linux filesystem confinement.
++6. Run all four canonical checks and the per-file coverage gate for the exact
++   candidate. Publish the reviewed upstream contribution from Sayr.
++7. Integrate OpenHuman after the accepted TinyBox module release is available.
+diff --git a/docs/plans/native-shell-execution.md b/docs/plans/native-shell-execution.md
+index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..c9772e045386f83723c0ffd5de2246071a0fc64d 100644
+--- a/docs/plans/native-shell-execution.md
++++ b/docs/plans/native-shell-execution.md
+@@ -18,3 +18,15 @@
+ 
+ Implementation is complete; upstream review and cross-platform CI remain. No host gitlink or availability claim is
+ part of this upstream slice.
++
++## Rust toolchain environment
++
++1. Seed child tests through Command.env to reproduce lost RUSTUP_HOME and
++   CARGO_HOME bytes without changing the parent process environment.
++2. Store environment values as OsString and include the two nonempty toolchain
++   names. Preserve approved overrides, ordinary passthrough validation,
++   Windows bootstrap, startup-hook removal and scratch ownership.
++3. Verify the actual shell child sees exact OS bytes, empty homes are unset,
++   approved overrides win and unrelated ambient names stay excluded.
++4. Verify the same behavior through a compiled production-admitted module and
++   Linux confinement using the grants from contract 1.19.
+diff --git a/docs/specs/local-grants.md b/docs/specs/local-grants.md
+index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..eaff1af5dc503f4e689fe4468a0e0adeb64f1968 100644
+--- a/docs/specs/local-grants.md
++++ b/docs/specs/local-grants.md
+@@ -29,7 +29,8 @@ supported escapes and unquoted comments preserve Git pathname semantics.
+ ~user/ and %(prefix)/ expansions are unsupported: the complete request returns
+ UnsupportedOperation instead of incomplete grants.
+ 
+-The bus rejects non-UTF-8 targets and more than 64 input or final grants.
++The default bus request rejects non-UTF-8 targets. Contract 1.19 callers can
++opt into raw Unix path grants. The combined grant limit remains 64.
+ Missing/protected individual paths are omitted. Discovery is a snapshot; hosts
+ must prevent later protected entries or concurrent tree mutation. No kernel deny
+ rule for future credential filenames is claimed.
+@@ -38,3 +39,9 @@ Acceptance: behavioral regressions cover every floor and include correction;
+ the actual dynamic artifact passes production manifest admission and discovery,
+ including explicit refusal of unsupported include expansions. No implementation
+ crate is needed by a host. Execution and host adapters remain separate work.
++
++## Custom Rust homes and Unix grant transport (contract 1.19)
++
++Existing absolute nonempty RUSTUP_HOME and CARGO_HOME paths are discovered on the module machine as OS paths. Defaults remain admitted by current toolchain policy. Rustup and selected Cargo bin/config/env/registry/git entries are read-only; credential floors and fixed-state alias protections apply to every selected root. Missing or invalid configured roots are skipped; discovery creates no directories.
++
++Callers opt into allow_unix_paths to receive non-UTF8 canonical Unix paths in an additive unix_paths grant group (raw byte vectors). UTF8 grants retain their established string representation. The same group can be supplied in native jail configuration after host approval. Empty optional groups preserve previous wire payloads. Module decoding rejects NUL, relative paths, parent traversal, oversized paths, unsupported platforms and combined grant counts above the established limit. Hosts require the new contract before sending byte grants and retain protected-path admission.
+diff --git a/docs/specs/native-shell-execution.md b/docs/specs/native-shell-execution.md
+index 1f45941cfdcbc74c9355e71946d559ac59e8f03b..7586a425c8e000b9c1c839e3a4568c7037df1d36 100644
+--- a/docs/specs/native-shell-execution.md
++++ b/docs/specs/native-shell-execution.md
+@@ -11,8 +11,9 @@ state_dir. This is local passthrough execution only; other providers and
+ unavailable native jails refuse explicitly.
+ 
+ The module owns shell selection and raw Windows quoting, snapshots only the
+-standard execution passthrough and Windows bootstrap names, rejects empty
+-present passthrough values, applies approved overrides, and finally removes
++standard execution passthrough, Windows bootstrap names and nonempty Rust
++toolchain homes. It rejects empty ordinary passthrough values, applies approved
++overrides, and finally removes
+ startup-hook variables. It clears the rest of the ambient environment.
+ 
+ Each execution owns a private scratch directory under
+@@ -36,3 +37,7 @@ Acceptance proves actual compiled-module execution on Windows and Unix,
+ quoting, environment isolation, scratch retention/cleanup, timeout/cancellation,
+ bounded output, identity replay, admission refusal and unavailable confinement.
+ OpenHuman host adaptation waits for an available released module.
++
++## Rust toolchain environment
++
++The native environment snapshots nonempty RUSTUP_HOME and CARGO_HOME as OS values, preserving Unix bytes. Approved UTF8 overrides retain precedence. Empty toolchain values behave as unset. Only these additional names are included; ordinary passthrough validation, Windows bootstrap, startup-hook removal and owned scratch remain unchanged. Canonical confinement grants are resolved separately using the current read-only host-state policy.
