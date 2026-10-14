@@ -52,10 +52,17 @@ index f75e27cbf23ce5fe696ec2e4f4d6ce9e2ab096b6..2fc1352272895b21a3eb9da6d11206dc
      pub allow_net: bool,
      /// Whether child processes are permitted.
 diff --git a/crates/tinybox-bus/src/jail_tests.rs b/crates/tinybox-bus/src/jail_tests.rs
-index f1c52617f38d10414be01bf6c09358716737de9c..9c3221d6591f98d8a80840f58950848a2c72cd33 100644
+index f1c52617f38d10414be01bf6c09358716737de9c..a95fed226b3d369b3060cd29cbfa0584c602972e 100644
 --- a/crates/tinybox-bus/src/jail_tests.rs
 +++ b/crates/tinybox-bus/src/jail_tests.rs
-@@ -17,3 +17,42 @@ fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), ser
+@@ -1,5 +1,6 @@
+ //! Native jail vocabulary is serialized independently of implementation types.
+ use super::*;
++use crate::{LocalGrants, UnixPathGrants};
+ 
+ #[test]
+ fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), serde_json::Error> {
+@@ -17,3 +18,42 @@ fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), ser
      );
      Ok(())
  }
@@ -183,10 +190,20 @@ index c3f7b8378cc5ae7eb94360ccc6517279784f0ff5..d3b6d53770027fa85cc2fb71f426425f
  }
  
 diff --git a/crates/tinybox-jail/src/grants/README.md b/crates/tinybox-jail/src/grants/README.md
-index d3e638cc1977608f4e9f6bb8ba037c22d8804b8c..13228670d9f4080859dfa6bdc57afe43d51732e7 100644
+index d3e638cc1977608f4e9f6bb8ba037c22d8804b8c..ac657f4048dd16cbbf434ab0c218d8fc7009ecc6 100644
 --- a/crates/tinybox-jail/src/grants/README.md
 +++ b/crates/tinybox-jail/src/grants/README.md
-@@ -30,3 +30,11 @@ read-only. Mutable tools need separately approved disposable state.
+@@ -2,7 +2,8 @@
+ 
+ resolve_local_jail_grants returns canonical existing JailGrants through the
+ workspace Result type. ResolveLocalGrants exposes the same behavior through
+-the module, with UTF-8 paths and an input/final 64-grant limit.
++the module, with UTF-8 string paths by default. Contract 1.19 callers can opt
++into raw non-UTF8 Unix path groups; all paths share the input/final 64-grant limit.
+ 
+ mod.rs orchestrates discovery and read-only precedence; types.rs holds results.
+ floor.rs matches components, adjacent pairs, protected prefixes and credential
+@@ -30,3 +31,11 @@ read-only. Mutable tools need separately approved disposable state.
  Hosts supply the complete protected floor and keep authorization. This module
  does not start commands or weaken unavailable confinement. See
  [the contract specification](../../../../docs/specs/local-grants.md).
