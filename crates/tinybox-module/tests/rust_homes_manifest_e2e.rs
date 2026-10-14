@@ -11,6 +11,8 @@ use tinybus::{Connection, broker::Broker, module::ModuleHost, transport::memory:
 
 const TEST_NAME: &str = "compiled_module_discovers_and_runs_custom_rust_homes";
 const CHILD_MODE: &str = "TINYBOX_RUST_HOMES_CHILD";
+// Admission scans host toolchain trees; bound that I/O separately from shell calls.
+const GRANT_SCAN_TIMEOUT: Duration = Duration::from_secs(180);
 
 type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -299,6 +301,8 @@ async fn run_module_child(mode: &str) -> TestResult<()> {
             let grants = resolve_grants(&proxy, &home, true).await?;
             assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
             let legacy = proxy
+                .clone()
+                .with_timeout(GRANT_SCAN_TIMEOUT)
                 .call::<tinybox_bus::LocalGrants>(
                     "ResolveLocalGrants",
                     (grant_request(&home, false)?,),
@@ -359,6 +363,8 @@ async fn resolve_grants(
     allow_unix_paths: bool,
 ) -> TestResult<tinybox_bus::LocalGrants> {
     Ok(proxy
+        .clone()
+        .with_timeout(GRANT_SCAN_TIMEOUT)
         .call(
             "ResolveLocalGrants",
             (grant_request(home, allow_unix_paths)?,),
