@@ -36,9 +36,12 @@ async fn compiled_module_discovers_and_runs_custom_rust_homes() -> TestResult<()
     #[cfg(target_os = "linux")]
     {
         let (rustup_home, rustup_proxy, toolchain) = installed_toolchain()?;
-        let local = Fixture::new("local", Some(&rustup_home))?;
-        local.install_rustup_proxies(&rustup_proxy)?;
-        run_child(&local, &artifact, "local", Some(&toolchain))?;
+        let local_tools = Fixture::new("local-tools", Some(&rustup_home))?;
+        local_tools.install_rustup_proxies(&rustup_proxy)?;
+        run_child(&local_tools, &artifact, "local-tools", Some(&toolchain))?;
+
+        let local_bytes = Fixture::new("local-bytes", None)?;
+        run_child(&local_bytes, &artifact, "local-bytes", Some(&toolchain))?;
     }
 
     Ok(())
@@ -127,7 +130,9 @@ impl Fixture {
             #[cfg(unix)]
             "bytes" => (unix_name(b"rustup-\xff"), unix_name(b"cargo-\xfe")),
             #[cfg(unix)]
-            "local" => (unix_name(b"rustup-\xfd"), unix_name(b"cargo-\xfc")),
+            "local-tools" => (OsString::from("rustup-работа"), unix_name(b"cargo-\xfc")),
+            #[cfg(unix)]
+            "local-bytes" => (unix_name(b"rustup-\xfd"), unix_name(b"cargo-\xfc")),
             _ => return Err("unknown Rust homes fixture".into()),
         };
         let rustup_home = root.path().join(rustup_leaf);
@@ -314,12 +319,17 @@ async fn run_module_child(mode: &str) -> TestResult<()> {
             );
             run_environment_shell(&proxy, &workspace, &state).await?;
         }
-        "local" => {
+        #[cfg(target_os = "linux")]
+        "local-tools" | "local-bytes" => {
+            let run_tools = mode == "local-tools";
             let grants = resolve_grants(&proxy, &home, true).await?;
             assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
             run_environment_shell(&proxy, &workspace, &state).await?;
             let toolchain = std::env::var("TINYBOX_SELECTED_TOOLCHAIN")?;
-            run_local_shell(&proxy, &workspace, &state, &outside, grants, &toolchain).await?;
+            run_local_shell(
+                &proxy, &workspace, &state, &outside, grants, &toolchain, run_tools,
+            )
+            .await?;
         }
         _ => return Err("unknown compiled-module fixture mode".into()),
     }
@@ -516,6 +526,19 @@ async fn run_environment_shell(
 }
 
 #[cfg(target_os = "linux")]
+fn assert_real_tool_versions(stdout: &str, run_tools: bool) {
+    if run_tools {
+        assert!(
+            stdout.contains("cargo "),
+            "cargo --version did not complete: {stdout}"
+        );
+        assert!(
+            stdout.contains("rustc "),
+            "rustc --version did not complete: {stdout}"
+        );
+    }
+}
+#[cfg(target_os = "linux")]
 async fn run_local_shell(
     proxy: &tinybus::Proxy,
     workspace: &Path,
@@ -523,6 +546,7 @@ async fn run_local_shell(
     outside: &Path,
     grants: tinybox_bus::LocalGrants,
     toolchain: &str,
+    run_tools: bool,
 ) -> TestResult<()> {
     let status: tinybox_bus::JailStatus = proxy.call("JailStatus", ()).await?;
     assert!(
@@ -554,6 +578,10 @@ async fn run_local_shell(
                 .to_owned(),
         ),
         ("RUSTUP_TOOLCHAIN".to_owned(), toolchain.to_owned()),
+        (
+            "TINYBOX_RUN_REAL_TOOLS".to_owned(),
+            if run_tools { "1" } else { "0" }.to_owned(),
+        ),
     ]
     .into_iter()
     .collect();
@@ -564,9 +592,11 @@ cat "$CARGO_HOME/config.toml" >/dev/null || exit 31
 cat "$CARGO_HOME/env" >/dev/null || exit 32
 cat "$CARGO_HOME/registry/cache-fixture" >/dev/null || exit 33
 cat "$CARGO_HOME/git/cache-fixture" >/dev/null || exit 34
-export PATH="$CARGO_HOME/bin:${PATH:-}"
-cargo --version || exit 35
-rustc --version || exit 36
+if [ "$TINYBOX_RUN_REAL_TOOLS" = "1" ]; then
+    export PATH="$CARGO_HOME/bin:${PATH:-}"
+    cargo --version || exit 35
+    rustc --version || exit 36
+fi
 if printf denied > "$RUSTUP_HOME/.tinybox-write-probe" 2>/dev/null; then exit 41; fi
 if printf denied > "$CARGO_HOME/config.toml" 2>/dev/null; then exit 42; fi
 if printf denied > "$CARGO_HOME/registry/write-probe" 2>/dev/null; then exit 43; fi
@@ -577,14 +607,7 @@ printf workspace-write > rust-homes-workspace-check
 printf rust-homes-local-ok"#;
     let output = run_shell(proxy, workspace, state, command, Some(jail), extra_env).await?;
     let stdout = String::from_utf8(output)?;
-    assert!(
-        stdout.contains("cargo "),
-        "cargo --version did not complete: {stdout}"
-    );
-    assert!(
-        stdout.contains("rustc "),
-        "rustc --version did not complete: {stdout}"
-    );
+    assert_real_tool_versions(&stdout, run_tools);
     assert!(
         stdout.ends_with("rust-homes-local-ok"),
         "Local toolchain checks did not reach their final boundary marker: {stdout}"
