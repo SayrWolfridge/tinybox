@@ -79,14 +79,14 @@ fn resolve_local_jail_grants_with_homes(
         if let Some(h) = home.as_deref() {
             b.add_cargo_home(&h.join(".cargo"));
             for dir in HOME_READ_ONLY_DIRS {
-                b.fixed_read_only(&h.join(dir), "toolchain");
+                b.toolchain_read_only(&h.join(dir), "toolchain");
             }
         }
         for dir in SYSTEM_TOOLCHAIN_DIRS {
-            b.fixed_read_only(Path::new(dir), "toolchain");
+            b.toolchain_read_only(Path::new(dir), "toolchain");
         }
         if let Some(path) = existing_absolute_directory(rustup_home) {
-            b.fixed_read_only(&path, "custom Rustup home");
+            b.toolchain_read_only(&path, "custom Rustup home");
         }
         if let Some(path) = existing_absolute_directory(cargo_home) {
             b.add_cargo_home(&path);
@@ -217,14 +217,22 @@ impl<'a> Builder<'a> {
         self.add_read_only(path, source, true);
     }
 
-    fn add_read_only(&mut self, path: &Path, source: &str, fixed: bool) {
-        if fixed {
-            self.fixed_read_only.push(path.to_path_buf());
-            if let Ok(canonical) = path.canonicalize() {
-                self.fixed_read_only.push(canonical);
-            }
+    /// Reserve toolchain roots even when the floor refuses their grant, so a
+    /// later writable extra cannot reintroduce the same host state.
+    fn toolchain_read_only(&mut self, path: &Path, source: &str) {
+        self.fixed_read_only.push(path.to_path_buf());
+        if let Ok(canonical) = path.canonicalize() {
+            self.fixed_read_only.push(canonical);
         }
+        self.add_read_only(path, source, false);
+    }
+
+    fn add_read_only(&mut self, path: &Path, source: &str, fixed: bool) {
         if let Some(p) = self.admit(path, source) {
+            if fixed {
+                self.fixed_read_only.push(path.to_path_buf());
+                self.fixed_read_only.push(p.clone());
+            }
             self.record_read_only(p);
         }
     }
@@ -280,11 +288,11 @@ impl<'a> Builder<'a> {
             self.cargo_roots.push(canonical);
         }
         log::debug!("[sandbox:grants] granting ~/.cargo parts with host code read-only");
-        self.fixed_read_only(&cargo.join("bin"), "toolchain");
-        self.fixed_read_only(&cargo.join("registry"), "toolchain");
-        self.fixed_read_only(&cargo.join("git"), "toolchain");
+        self.toolchain_read_only(&cargo.join("bin"), "toolchain");
+        self.toolchain_read_only(&cargo.join("registry"), "toolchain");
+        self.toolchain_read_only(&cargo.join("git"), "toolchain");
         for f in CARGO_READ_ONLY_FILES {
-            self.fixed_read_only(&cargo.join(f), "toolchain");
+            self.toolchain_read_only(&cargo.join(f), "toolchain");
         }
     }
 
