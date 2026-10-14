@@ -26,7 +26,7 @@ Discovery implementation is complete subject to review and recorded validation.
 Execution, released-module consumption and OpenHuman adapters are subsequent
 slices and are not represented as delivered by this prerequisite.
 
-## Custom Rust homes and Unix grant transport (contract 1.19)
+## Custom Rust homes and Unix grant transport (contract 1.20)
 
 1. Reproduce custom UTF8 and Unix-byte Rust home discovery failures against
    untouched production using subprocess-seeded public API tests. Reproduce

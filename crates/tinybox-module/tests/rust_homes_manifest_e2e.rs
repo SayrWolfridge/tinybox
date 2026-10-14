@@ -326,7 +326,7 @@ async fn run_module_child(mode: &str) -> TestResult<()> {
     )?;
 
     let capabilities: tinybox_bus::ModuleCapabilities = proxy.call("Capabilities", ()).await?;
-    assert_eq!(capabilities.contract_version, (1, 19));
+    assert_eq!(capabilities.contract_version, (1, 20));
     match mode {
         "utf8" => {
             let grants = resolve_grants(&proxy, &home, false).await?;

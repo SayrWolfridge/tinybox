@@ -29,7 +29,7 @@ part of this upstream slice.
 3. Verify the actual shell child sees exact OS bytes, empty homes are unset,
    approved overrides win and unrelated ambient names stay excluded.
 4. Verify the same behavior through a compiled production-admitted module and
-   Linux confinement using the grants from contract 1.19.
+   Linux confinement using the grants from contract 1.20.
 
 5. On macOS, verify byte-exact shell values for invalid UTF8 home names whose
    creation fails with EILSEQ, and require discovery to omit unavailable paths.
