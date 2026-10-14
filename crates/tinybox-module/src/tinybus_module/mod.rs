@@ -74,17 +74,20 @@ fn grant_paths_to_wire(
     for path in paths {
         match path.into_os_string().into_string() {
             Ok(path) => utf8.push(path),
-            Err(_path) if allow_unix_paths => {
+            Err(path) if allow_unix_paths => {
                 #[cfg(unix)]
                 {
                     use std::os::unix::ffi::OsStringExt;
-                    unix.push(_path.into_vec());
+                    unix.push(path.into_vec());
                 }
                 #[cfg(not(unix))]
-                return Err(resources::failure(
-                    tinybox_bus::INVALID_FILE_PATH,
-                    "non-UTF-8 grant paths require Unix",
-                ));
+                {
+                    drop(path);
+                    return Err(resources::failure(
+                        tinybox_bus::INVALID_FILE_PATH,
+                        "non-UTF-8 grant paths require Unix",
+                    ));
+                }
             }
             Err(_) => {
                 return Err(resources::failure(

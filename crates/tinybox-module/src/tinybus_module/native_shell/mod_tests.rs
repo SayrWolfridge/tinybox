@@ -80,7 +80,7 @@ fn approved_environment_overrides_preserve_custom_temporary_directory_and_remove
         shell
             .environment
             .get("TMPDIR")
-            .and_then(|value| value.environment_text()),
+            .and_then(EnvironmentText::environment_text),
         Some("approved-temporary-location")
     );
     #[cfg(unix)]
@@ -276,21 +276,21 @@ fn native_shell_preserves_resource_environment_and_request_overrides()
         shell
             .environment
             .get("RESOURCE_CONFIG")
-            .and_then(|value| value.environment_text()),
+            .and_then(EnvironmentText::environment_text),
         Some("preserved")
     );
     assert_eq!(
         shell
             .environment
             .get("TMPDIR")
-            .and_then(|value| value.environment_text()),
+            .and_then(EnvironmentText::environment_text),
         Some("resource-temp")
     );
     assert_eq!(
         shell
             .environment
             .get("OVERRIDE")
-            .and_then(|value| value.environment_text()),
+            .and_then(EnvironmentText::environment_text),
         Some("request")
     );
     Ok(())
@@ -373,6 +373,9 @@ fn unix_toolchain_environment_is_preserved_for_the_shell_child()
         if let Some(path) = std::env::var_os("PATH") {
             command.env("PATH", path);
         }
+        if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile_file);
+        }
         command.output()
     }
 
@@ -421,7 +424,7 @@ fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_override
         shell
             .environment
             .get("PYTHONIOENCODING")
-            .and_then(|value| value.environment_text()),
+            .and_then(EnvironmentText::environment_text),
         Some("latin-1")
     );
     Ok(())

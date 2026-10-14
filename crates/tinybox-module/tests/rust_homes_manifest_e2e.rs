@@ -54,6 +54,7 @@ fn run_child(
     for name in [
         "PATH",
         "LD_LIBRARY_PATH",
+        "LLVM_PROFILE_FILE",
         "SystemRoot",
         "WINDIR",
         "COMSPEC",

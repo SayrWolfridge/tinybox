@@ -76,13 +76,7 @@ impl ShellContext {
                 environment.insert(name.to_owned(), value.into());
             }
         }
-        for name in ["RUSTUP_HOME", "CARGO_HOME"] {
-            if let Some(value) = std::env::var_os(name)
-                && !value.is_empty()
-            {
-                environment.insert(name.to_owned(), value);
-            }
-        }
+        snapshot_toolchain_homes(&mut environment);
         if request.shell.python_utf8 {
             apply_python_utf8_defaults(&mut environment);
         }
@@ -234,6 +228,17 @@ impl ShellContext {
         .map_err(|error| {
             tinybox_core::Error::io("join shell scratch cleanup", &std::io::Error::other(error))
         })?
+    }
+}
+fn snapshot_toolchain_homes(
+    environment: &mut std::collections::BTreeMap<String, std::ffi::OsString>,
+) {
+    for name in ["RUSTUP_HOME", "CARGO_HOME"] {
+        if let Some(value) = std::env::var_os(name)
+            && !value.is_empty()
+        {
+            environment.insert(name.to_owned(), value);
+        }
     }
 }
 /// Windows: `CREATE_NO_WINDOW`, so a GUI host's shell child flashes no console.
