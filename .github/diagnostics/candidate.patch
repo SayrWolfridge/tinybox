@@ -834,10 +834,10 @@ index 0350e18dfbc3e84866f830db7fc52951452f81a4..76b7692c02175db8952cdc80af9bb718
  the standalone form of the 1.17 check: it lists every way a run's network mode,
  workspace and read-only mounts would weaken isolation, without a daemon or a
 diff --git a/crates/tinybox-module/src/tinybus_module/mod.rs b/crates/tinybox-module/src/tinybus_module/mod.rs
-index 35c9da008e8fbc3861ca14d64cd6278d4a55223a..c248703d4c9a7ad0f816d8cbeb2eebe6fbcf3c6b 100644
+index 35c9da008e8fbc3861ca14d64cd6278d4a55223a..9e52f666ae5842498ddb87b09e5b10d7d1bbe159 100644
 --- a/crates/tinybox-module/src/tinybus_module/mod.rs
 +++ b/crates/tinybox-module/src/tinybus_module/mod.rs
-@@ -61,16 +61,40 @@ impl BoxService {
+@@ -61,16 +61,43 @@ impl BoxService {
      }
  }
  
@@ -864,17 +864,20 @@ index 35c9da008e8fbc3861ca14d64cd6278d4a55223a..c248703d4c9a7ad0f816d8cbeb2eebe6
 +    for path in paths {
 +        match path.into_os_string().into_string() {
 +            Ok(path) => utf8.push(path),
-+            Err(_path) if allow_unix_paths => {
++            Err(path) if allow_unix_paths => {
 +                #[cfg(unix)]
 +                {
 +                    use std::os::unix::ffi::OsStringExt;
-+                    unix.push(_path.into_vec());
++                    unix.push(path.into_vec());
 +                }
 +                #[cfg(not(unix))]
-+                return Err(resources::failure(
-+                    tinybox_bus::INVALID_FILE_PATH,
-+                    "non-UTF-8 grant paths require Unix",
-+                ));
++                {
++                    drop(path);
++                    return Err(resources::failure(
++                        tinybox_bus::INVALID_FILE_PATH,
++                        "non-UTF-8 grant paths require Unix",
++                    ));
++                }
 +            }
 +            Err(_) => {
 +                return Err(resources::failure(
@@ -888,7 +891,7 @@ index 35c9da008e8fbc3861ca14d64cd6278d4a55223a..c248703d4c9a7ad0f816d8cbeb2eebe6
  }
  
  #[tinybus::interface(name = "ai.tinyhumans.tinybox.Box")]
-@@ -102,6 +126,7 @@ impl BoxService {
+@@ -102,6 +129,7 @@ impl BoxService {
                  "too many local grant paths",
              ));
          }
@@ -896,7 +899,7 @@ index 35c9da008e8fbc3861ca14d64cd6278d4a55223a..c248703d4c9a7ad0f816d8cbeb2eebe6
          let grants = tokio::task::spawn_blocking(move || {
              tinybox_jail::grants::resolve_local_jail_grants(
                  request.home.as_deref().map(std::path::Path::new),
-@@ -125,9 +150,16 @@ impl BoxService {
+@@ -125,9 +153,16 @@ impl BoxService {
                  "too many discovered local grant paths",
              ));
          }
@@ -1162,7 +1165,7 @@ index 33e1b9a2235978fbba64e252f85db28d3515bd8b..e09274cefc40ce5c8f7eb552fc3fbe9d
  includes resource variables, with explicit shell-request overrides applied last.
 +On Unix, nonempty RUSTUP_HOME and CARGO_HOME values are snapshotted as OS values, preserving non-UTF-8 path bytes. Empty values are treated as unset. Explicit resource and shell-request overrides retain their existing precedence. The snapshot carries only these two names as additional host values.
 diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs b/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs
-index 6943cd562831482dac3b33cfd26986062fac88a7..3bd6ddcc767268dc3130d418722305f9f646b989 100644
+index 6943cd562831482dac3b33cfd26986062fac88a7..854a8d4a4d24399a468c1f1fcae504dc6daf1e83 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_shell/mod.rs
 @@ -62,7 +62,7 @@ impl ShellContext {
@@ -1174,21 +1177,19 @@ index 6943cd562831482dac3b33cfd26986062fac88a7..3bd6ddcc767268dc3130d418722305f9
          for name in [
              "PATH", "HOME", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "USER", "SHELL", "TMPDIR",
          ]
-@@ -73,6 +73,13 @@ impl ShellContext {
+@@ -73,9 +73,10 @@ impl ShellContext {
                  if value.is_empty() {
                      return Err(invalid());
                  }
+-                environment.insert(name.to_owned(), value);
 +                environment.insert(name.to_owned(), value.into());
-+            }
-+        }
-+        for name in ["RUSTUP_HOME", "CARGO_HOME"] {
-+            if let Some(value) = std::env::var_os(name)
-+                && !value.is_empty()
-+            {
-                 environment.insert(name.to_owned(), value);
              }
          }
-@@ -86,7 +93,7 @@ impl ShellContext {
++        snapshot_toolchain_homes(&mut environment);
+         if request.shell.python_utf8 {
+             apply_python_utf8_defaults(&mut environment);
+         }
+@@ -86,7 +87,7 @@ impl ShellContext {
              if cfg!(windows) {
                  environment.retain(|key, _| !key.eq_ignore_ascii_case(name));
              }
@@ -1197,7 +1198,25 @@ index 6943cd562831482dac3b33cfd26986062fac88a7..3bd6ddcc767268dc3130d418722305f9
          }
          for name in ["TMPDIR", "TEMP", "TMP"] {
              if !resolved
-@@ -269,11 +276,13 @@ mod tests;
+@@ -229,6 +230,17 @@ impl ShellContext {
+         })?
+     }
+ }
++fn snapshot_toolchain_homes(
++    environment: &mut std::collections::BTreeMap<String, std::ffi::OsString>,
++) {
++    for name in ["RUSTUP_HOME", "CARGO_HOME"] {
++        if let Some(value) = std::env::var_os(name)
++            && !value.is_empty()
++        {
++            environment.insert(name.to_owned(), value);
++        }
++    }
++}
+ /// Windows: `CREATE_NO_WINDOW`, so a GUI host's shell child flashes no console.
+ /// Other platforms have no console window to hide.
+ fn apply_window_flags(command: &mut std::process::Command, hide_window: bool) {
+@@ -269,11 +281,13 @@ mod tests;
  
  // Parent value wins; otherwise default to UTF-8 so a legacy Windows console
  // code page cannot kill a Python script.
@@ -1214,7 +1233,7 @@ index 6943cd562831482dac3b33cfd26986062fac88a7..3bd6ddcc767268dc3130d418722305f9
      }
  }
 diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
-index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054372aaafe 100644
+index 038a3370ecf785192f2d081f27c9bbe8862a6006..17639efc35faebd401d562f691d01111416e7af3 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 @@ -1,5 +1,18 @@
@@ -1244,7 +1263,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054
 +        shell
 +            .environment
 +            .get("TMPDIR")
-+            .and_then(|value| value.environment_text()),
++            .and_then(EnvironmentText::environment_text),
          Some("approved-temporary-location")
      );
      #[cfg(unix)]
@@ -1256,7 +1275,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054
          allow_net: false,
          allow_subprocess: false,
          enforcement: tinybox_bus::JailEnforcement::Enforced,
-@@ -256,20 +273,136 @@ fn native_shell_preserves_resource_environment_and_request_overrides()
+@@ -256,20 +273,139 @@ fn native_shell_preserves_resource_environment_and_request_overrides()
          .insert("OVERRIDE".into(), "request".into());
      let shell = ShellContext::prepare(request, state.path(), &resolved)?;
      assert_eq!(
@@ -1264,7 +1283,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054
 +        shell
 +            .environment
 +            .get("RESOURCE_CONFIG")
-+            .and_then(|value| value.environment_text()),
++            .and_then(EnvironmentText::environment_text),
          Some("preserved")
      );
      assert_eq!(
@@ -1272,7 +1291,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054
 +        shell
 +            .environment
 +            .get("TMPDIR")
-+            .and_then(|value| value.environment_text()),
++            .and_then(EnvironmentText::environment_text),
          Some("resource-temp")
      );
      assert_eq!(
@@ -1280,7 +1299,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054
 +        shell
 +            .environment
 +            .get("OVERRIDE")
-+            .and_then(|value| value.environment_text()),
++            .and_then(EnvironmentText::environment_text),
          Some("request")
      );
      Ok(())
@@ -1363,6 +1382,9 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054
 +        if let Some(path) = std::env::var_os("PATH") {
 +            command.env("PATH", path);
 +        }
++        if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
++            command.env("LLVM_PROFILE_FILE", profile_file);
++        }
 +        command.output()
 +    }
 +
@@ -1396,12 +1418,12 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054
  #[test]
  fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_overrides()
  -> std::result::Result<(), Box<dyn std::error::Error>> {
-@@ -288,7 +421,7 @@ fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_override
+@@ -288,7 +424,7 @@ fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_override
          shell
              .environment
              .get("PYTHONIOENCODING")
 -            .map(String::as_str),
-+            .and_then(|value| value.environment_text()),
++            .and_then(EnvironmentText::environment_text),
          Some("latin-1")
      );
      Ok(())
@@ -1472,10 +1494,10 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..0a25b1b121678fc35601109383e150e14bd76cfa
+index 0000000000000000000000000000000000000000..0c99d9bda32a69f37c7aa613c5d538e86e3ad0fd
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,734 @@
+@@ -0,0 +1,735 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -1532,6 +1554,7 @@ index 0000000000000000000000000000000000000000..0a25b1b121678fc35601109383e150e1
 +    for name in [
 +        "PATH",
 +        "LD_LIBRARY_PATH",
++        "LLVM_PROFILE_FILE",
 +        "SystemRoot",
 +        "WINDIR",
 +        "COMSPEC",
