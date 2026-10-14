@@ -297,6 +297,31 @@ fn native_shell_preserves_resource_environment_and_request_overrides()
 }
 
 #[cfg(unix)]
+fn toolchain_environment_child(
+    mode: &str,
+    rustup: std::ffi::OsString,
+    cargo: std::ffi::OsString,
+) -> std::io::Result<std::process::Output> {
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "unix_toolchain_environment_is_preserved_for_the_shell_child",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("TINYBOX_NATIVE_ENV_TEST", mode)
+        .env("TINYBOX_UNAPPROVED", "ambient-secret")
+        .env("RUSTUP_HOME", rustup)
+        .env("CARGO_HOME", cargo);
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile_file);
+    }
+    command.output()
+}
+#[cfg(unix)]
 #[test]
 fn unix_toolchain_environment_is_preserved_for_the_shell_child()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -354,31 +379,6 @@ fn unix_toolchain_environment_is_preserved_for_the_shell_child()
         return Ok(());
     }
 
-    fn run_child(
-        mode: &str,
-        rustup: std::ffi::OsString,
-        cargo: std::ffi::OsString,
-    ) -> std::io::Result<std::process::Output> {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
-        command
-            .args([
-                "unix_toolchain_environment_is_preserved_for_the_shell_child",
-                "--nocapture",
-            ])
-            .env_clear()
-            .env("TINYBOX_NATIVE_ENV_TEST", mode)
-            .env("TINYBOX_UNAPPROVED", "ambient-secret")
-            .env("RUSTUP_HOME", rustup)
-            .env("CARGO_HOME", cargo);
-        if let Some(path) = std::env::var_os("PATH") {
-            command.env("PATH", path);
-        }
-        if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
-            command.env("LLVM_PROFILE_FILE", profile_file);
-        }
-        command.output()
-    }
-
     for (mode, rustup, cargo) in [
         (
             "raw",
@@ -392,7 +392,7 @@ fn unix_toolchain_environment_is_preserved_for_the_shell_child()
         ),
         ("empty", "".into(), "".into()),
     ] {
-        let output = run_child(mode, rustup, cargo)?;
+        let output = toolchain_environment_child(mode, rustup, cargo)?;
         assert!(
             String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
             "native shell child fixture {mode} did not run exactly one matching test: {}",

@@ -139,6 +139,7 @@ fn unavailable_and_noop_backends_never_accept_declared_enforcement()
 #[test]
 fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let root = tempfile::tempdir()?;
     let extra = tempfile::tempdir()?;
     let file = root.path().join("file");
@@ -160,7 +161,6 @@ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
     assert_eq!(jail.root, root.path().canonicalize()?);
     assert_eq!(jail.read_only, vec![file.canonicalize()?]);
     assert_eq!(jail.read_write, vec![extra.path().canonicalize()?]);
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let byte_file = root
         .path()
         .join(std::ffi::OsString::from_vec(vec![b'b', 0xff]));
