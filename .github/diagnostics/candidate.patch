@@ -1533,10 +1533,10 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..c49c59308b06981d9223c60fa7338c2fa15e312c
+index 0000000000000000000000000000000000000000..94a81d6169146a57e0fcc4b98a38772a420ee08a
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,743 @@
+@@ -0,0 +1,749 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -1550,6 +1550,8 @@ index 0000000000000000000000000000000000000000..c49c59308b06981d9223c60fa7338c2f
 +
 +const TEST_NAME: &str = "compiled_module_discovers_and_runs_custom_rust_homes";
 +const CHILD_MODE: &str = "TINYBOX_RUST_HOMES_CHILD";
++// Admission scans host toolchain trees; bound that I/O separately from shell calls.
++const GRANT_SCAN_TIMEOUT: Duration = Duration::from_secs(180);
 +
 +type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 +
@@ -1838,6 +1840,8 @@ index 0000000000000000000000000000000000000000..c49c59308b06981d9223c60fa7338c2f
 +            let grants = resolve_grants(&proxy, &home, true).await?;
 +            assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
 +            let legacy = proxy
++                .clone()
++                .with_timeout(GRANT_SCAN_TIMEOUT)
 +                .call::<tinybox_bus::LocalGrants>(
 +                    "ResolveLocalGrants",
 +                    (grant_request(&home, false)?,),
@@ -1898,6 +1902,8 @@ index 0000000000000000000000000000000000000000..c49c59308b06981d9223c60fa7338c2f
 +    allow_unix_paths: bool,
 +) -> TestResult<tinybox_bus::LocalGrants> {
 +    Ok(proxy
++        .clone()
++        .with_timeout(GRANT_SCAN_TIMEOUT)
 +        .call(
 +            "ResolveLocalGrants",
 +            (grant_request(home, allow_unix_paths)?,),
