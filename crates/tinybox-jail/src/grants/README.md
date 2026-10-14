@@ -30,3 +30,11 @@ read-only. Mutable tools need separately approved disposable state.
 Hosts supply the complete protected floor and keep authorization. This module
 does not start commands or weaken unavailable confinement. See
 [the contract specification](../../../../docs/specs/local-grants.md).
+
+Custom existing absolute nonempty `RUSTUP_HOME` and `CARGO_HOME` directories are
+also discovered. Rustup is granted read-only as a whole tree. Cargo receives only
+`bin`, `config.toml`, `config`, `env`, `registry` and `git`; the Cargo root stays
+excluded. Empty, relative, missing and non-directory custom roots are skipped.
+Native OS paths retain their original bytes through discovery. The caller's
+protected floor and canonical alias inspection apply to every custom root, and
+writable extras cannot reach fixed toolchain state or Cargo roots.

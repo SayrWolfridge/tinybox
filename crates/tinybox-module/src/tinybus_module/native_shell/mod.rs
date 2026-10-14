@@ -62,7 +62,7 @@ impl ShellContext {
             .tempdir_in(scratch_root)
             .map_err(|_| invalid())?;
         let selection = tinybox_host::select_shell(&request.shell);
-        let mut environment = std::collections::BTreeMap::new();
+        let mut environment = std::collections::BTreeMap::<String, std::ffi::OsString>::new();
         for name in [
             "PATH", "HOME", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "USER", "SHELL", "TMPDIR",
         ]
@@ -73,6 +73,13 @@ impl ShellContext {
                 if value.is_empty() {
                     return Err(invalid());
                 }
+                environment.insert(name.to_owned(), value.into());
+            }
+        }
+        for name in ["RUSTUP_HOME", "CARGO_HOME"] {
+            if let Some(value) = std::env::var_os(name)
+                && !value.is_empty()
+            {
                 environment.insert(name.to_owned(), value);
             }
         }
@@ -86,7 +93,7 @@ impl ShellContext {
             if cfg!(windows) {
                 environment.retain(|key, _| !key.eq_ignore_ascii_case(name));
             }
-            environment.insert(name.clone(), value.clone());
+            environment.insert(name.clone(), value.clone().into());
         }
         for name in ["TMPDIR", "TEMP", "TMP"] {
             if !resolved
@@ -269,11 +276,13 @@ mod tests;
 
 // Parent value wins; otherwise default to UTF-8 so a legacy Windows console
 // code page cannot kill a Python script.
-fn apply_python_utf8_defaults(environment: &mut std::collections::BTreeMap<String, String>) {
+fn apply_python_utf8_defaults(
+    environment: &mut std::collections::BTreeMap<String, std::ffi::OsString>,
+) {
     for (name, default) in [("PYTHONUTF8", "1"), ("PYTHONIOENCODING", "utf-8")] {
         let value = std::env::var_os(name)
             .and_then(|v| v.into_string().ok())
             .unwrap_or_else(|| default.into());
-        environment.insert(name.to_owned(), value);
+        environment.insert(name.to_owned(), value.into());
     }
 }

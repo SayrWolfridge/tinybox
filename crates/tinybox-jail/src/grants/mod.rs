@@ -38,14 +38,37 @@ pub fn resolve_local_jail_grants(
     protected: &ProtectedPaths,
 ) -> tinybox_core::Result<JailGrants> {
     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
-    resolve_local_jail_grants_in(home, xdg_config_home.as_deref(), cfg, protected)
+    let rustup_home = std::env::var_os("RUSTUP_HOME");
+    let cargo_home = std::env::var_os("CARGO_HOME");
+    resolve_local_jail_grants_with_homes(
+        home,
+        xdg_config_home.as_deref(),
+        rustup_home.as_deref(),
+        cargo_home.as_deref(),
+        cfg,
+        protected,
+    )
 }
 
 /// [`resolve_local_jail_grants`] with `XDG_CONFIG_HOME` passed in rather than
 /// read from the process environment, so callers (and tests) stay hermetic.
+#[cfg(test)]
 pub(crate) fn resolve_local_jail_grants_in(
     home: Option<&Path>,
     xdg_config_home: Option<&std::ffi::OsStr>,
+    cfg: &LocalGrantConfig,
+    protected: &ProtectedPaths,
+) -> tinybox_core::Result<JailGrants> {
+    resolve_local_jail_grants_with_homes(home, xdg_config_home, None, None, cfg, protected)
+}
+
+/// Resolve grants with all environment-derived roots supplied explicitly.
+/// This keeps discovery testable without changing the process environment.
+fn resolve_local_jail_grants_with_homes(
+    home: Option<&Path>,
+    xdg_config_home: Option<&std::ffi::OsStr>,
+    rustup_home: Option<&std::ffi::OsStr>,
+    cargo_home: Option<&std::ffi::OsStr>,
     cfg: &LocalGrantConfig,
     protected: &ProtectedPaths,
 ) -> tinybox_core::Result<JailGrants> {
@@ -61,6 +84,12 @@ pub(crate) fn resolve_local_jail_grants_in(
         }
         for dir in SYSTEM_TOOLCHAIN_DIRS {
             b.fixed_read_only(Path::new(dir), "toolchain");
+        }
+        if let Some(path) = existing_absolute_directory(rustup_home) {
+            b.fixed_read_only(&path, "custom Rustup home");
+        }
+        if let Some(path) = existing_absolute_directory(cargo_home) {
+            b.add_cargo_home(&path);
         }
         if let Some(h) = home.as_deref() {
             b.add_gitconfig_at(h, xdg_config_home)?;
@@ -89,12 +118,18 @@ pub(crate) fn resolve_local_jail_grants_in(
     Ok(b.grants)
 }
 
+fn existing_absolute_directory(raw: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let path = PathBuf::from(raw?);
+    (!path.as_os_str().is_empty() && path.is_absolute() && path.is_dir()).then_some(path)
+}
+
 struct Builder<'a> {
     home: Option<&'a Path>,
     protected: &'a ProtectedPaths,
     grants: JailGrants,
     seen: HashSet<PathBuf>,
     fixed_read_only: Vec<PathBuf>,
+    cargo_roots: Vec<PathBuf>,
 }
 
 impl<'a> Builder<'a> {
@@ -105,6 +140,7 @@ impl<'a> Builder<'a> {
             grants: JailGrants::default(),
             seen: HashSet::new(),
             fixed_read_only: Vec::new(),
+            cargo_roots: Vec::new(),
         }
     }
 
@@ -164,7 +200,17 @@ impl<'a> Builder<'a> {
     }
 
     fn read_only(&mut self, path: &Path, source: &str) {
-        self.add_read_only(path, source, false);
+        let Some(canonical) = self.admit(path, source) else {
+            return;
+        };
+        if self.exposes_cargo_root(&canonical) {
+            log::warn!(
+                "refused extra grant containing the Cargo home root: {}",
+                path.display()
+            );
+            return;
+        }
+        self.record_read_only(canonical);
     }
 
     fn fixed_read_only(&mut self, path: &Path, source: &str) {
@@ -172,14 +218,20 @@ impl<'a> Builder<'a> {
     }
 
     fn add_read_only(&mut self, path: &Path, source: &str, fixed: bool) {
+        if fixed {
+            self.fixed_read_only.push(path.to_path_buf());
+            if let Ok(canonical) = path.canonicalize() {
+                self.fixed_read_only.push(canonical);
+            }
+        }
         if let Some(p) = self.admit(path, source) {
-            if fixed {
-                self.fixed_read_only.push(path.to_path_buf());
-                self.fixed_read_only.push(p.clone());
-            }
-            if self.seen.insert(p.clone()) {
-                self.grants.read_only.push(p);
-            }
+            self.record_read_only(p);
+        }
+    }
+
+    fn record_read_only(&mut self, path: PathBuf) {
+        if self.seen.insert(path.clone()) {
+            self.grants.read_only.push(path);
         }
     }
 
@@ -198,7 +250,7 @@ impl<'a> Builder<'a> {
                     .chain(CARGO_READ_ONLY_FILES.iter().copied())
                     .any(|entry| reaches(&home.join(".cargo").join(entry)))
             });
-            if exposes_fixed || exposes_cargo {
+            if exposes_fixed || exposes_cargo || self.exposes_cargo_root(&p) {
                 log::warn!(
                     "refused writable grant reaching fixed host toolchain state: {}",
                     p.display()
@@ -223,6 +275,10 @@ impl<'a> Builder<'a> {
         if !cargo.is_dir() {
             return;
         }
+        if let Ok(canonical) = cargo.canonicalize() {
+            self.cargo_roots.push(cargo.to_path_buf());
+            self.cargo_roots.push(canonical);
+        }
         log::debug!("[sandbox:grants] granting ~/.cargo parts with host code read-only");
         self.fixed_read_only(&cargo.join("bin"), "toolchain");
         self.fixed_read_only(&cargo.join("registry"), "toolchain");
@@ -230,6 +286,13 @@ impl<'a> Builder<'a> {
         for f in CARGO_READ_ONLY_FILES {
             self.fixed_read_only(&cargo.join(f), "toolchain");
         }
+    }
+
+    fn exposes_cargo_root(&self, path: &Path) -> bool {
+        let normalized = normalized_floor_path(&path.to_string_lossy());
+        self.cargo_roots.iter().any(|root| {
+            root_spellings(root).any(|cargo_root| same_or_descendant(&cargo_root, &normalized))
+        })
     }
 }
 

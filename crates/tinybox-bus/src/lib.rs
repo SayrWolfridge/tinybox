@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod grants;
-pub use grants::{LocalGrantConfig, LocalGrants, ProtectedPaths, ResolveLocalGrantsRequest};
+pub use grants::{
+    LocalGrantConfig, LocalGrants, ProtectedPaths, ResolveLocalGrantsRequest, UnixPathGrants,
+};
 
 mod jail;
 pub use jail::{JailEnforcement, NativeJailConfig};
@@ -60,8 +62,9 @@ pub use files::{
 /// 1.18 adds the standalone `ValidateDockerPolicy` member, so a host can ask the
 /// module for the same verdict the Docker run members enforce without starting
 /// a container, and `hide_window` on [`ShellExecRequest`] (Windows console
-/// suppression for a native shell child; ignored elsewhere).
-pub const CONTRACT_VERSION: (u32, u32) = (1, 18);
+/// suppression for a native shell child; ignored elsewhere. 1.19 adds opted-in
+/// byte-preserving Unix grant transport.
+pub const CONTRACT_VERSION: (u32, u32) = (1, 19);
 
 /// Whether this host vocabulary can bind to a module's advertised version.
 /// The major must match and the module's minor must include every host member.
