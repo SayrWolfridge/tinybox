@@ -1,0 +1,61 @@
+name: TinyBox Rust homes validation
+on:
+  push:
+    branches: [sayr/rust-homes-validation]
+permissions:
+  contents: read
+concurrency:
+  group: tinybox-rust-homes-validation
+  cancel-in-progress: true
+env:
+  CARGO_BUILD_JOBS: '2'
+  CARGO_TERM_COLOR: never
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: diagnostic
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tinyhumansai/tinybox
+          ref: '7ceaf5c3bdf62928955d00547aa47cd399ba7ba3'
+          path: source
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: source
+          shared-key: tinybox-native-rust-homes
+      - name: Reproduce runtime failures on untouched production
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../evidence
+          git rev-parse HEAD > ../evidence/source-base.txt
+          git apply --check ../diagnostic/.github/diagnostics/baseline-tests.patch
+          git apply ../diagnostic/.github/diagnostics/baseline-tests.patch
+          set +e
+          cargo test --locked -p tinybox-jail --test toolchain_homes -- --test-threads=1 > ../evidence/baseline-grants.log 2>&1
+          grants_exit=$?
+          cargo test --locked -p tinybox-module --lib -- unix_toolchain_environment_is_preserved_for_the_shell_child --test-threads=1 > ../evidence/baseline-env.log 2>&1
+          env_exit=$?
+          set -e
+          test "$grants_exit" -ne 0
+          test "$env_exit" -ne 0
+          grep -Eq 'test result: FAILED\. [0-9]+ passed; [1-9][0-9]* failed;' ../evidence/baseline-grants.log
+          grep -Eq 'test result: FAILED\. [0-9]+ passed; [1-9][0-9]* failed;' ../evidence/baseline-env.log
+          git apply --reverse ../diagnostic/.github/diagnostics/baseline-tests.patch
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: tinybox-baseline-reproduction
+          path: evidence
+          retention-days: 30
