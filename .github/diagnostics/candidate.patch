@@ -106,7 +106,7 @@ index f1c52617f38d10414be01bf6c09358716737de9c..a95fed226b3d369b3060cd29cbfa0584
 +    Ok(())
 +}
 diff --git a/crates/tinybox-bus/src/lib.rs b/crates/tinybox-bus/src/lib.rs
-index 12e6234c10efdc5f205f94c876d4f0aaf54e2cdd..940ac42187d9a225d89d3586ec5de4d9402c2be2 100644
+index abc1792298c00d4ce427a013997ceb2e7ca2e090..8aefd7f793723830317c9d25477dc5889b79526c 100644
 --- a/crates/tinybox-bus/src/lib.rs
 +++ b/crates/tinybox-bus/src/lib.rs
 @@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
@@ -120,61 +120,60 @@ index 12e6234c10efdc5f205f94c876d4f0aaf54e2cdd..940ac42187d9a225d89d3586ec5de4d9
  
  mod jail;
  pub use jail::{JailEnforcement, NativeJailConfig};
-@@ -60,8 +62,9 @@ pub use files::{
- /// 1.18 adds the standalone `ValidateDockerPolicy` member, so a host can ask the
- /// module for the same verdict the Docker run members enforce without starting
- /// a container, and `hide_window` on [`ShellExecRequest`] (Windows console
--/// suppression for a native shell child; ignored elsewhere).
--pub const CONTRACT_VERSION: (u32, u32) = (1, 18);
-+/// suppression for a native shell child; ignored elsewhere. 1.19 adds opted-in
-+/// byte-preserving Unix grant transport.
-+pub const CONTRACT_VERSION: (u32, u32) = (1, 19);
+@@ -66,7 +68,8 @@ pub use files::{
+ /// suppression for a native shell child; ignored elsewhere).
+ /// 1.19 adds `NetworkPolicy::Allowlist` and the observational
+ /// [`SandboxEvent`] vocabulary (`Started`, `Denied`, `LimitHit`, `Exited`).
+-pub const CONTRACT_VERSION: (u32, u32) = (1, 19);
++/// 1.20 adds opted-in byte-preserving Unix grant transport.
++pub const CONTRACT_VERSION: (u32, u32) = (1, 20);
  
  /// Whether this host vocabulary can bind to a module's advertised version.
  /// The major must match and the module's minor must include every host member.
 diff --git a/crates/tinybox-bus/src/lib_tests.rs b/crates/tinybox-bus/src/lib_tests.rs
-index c3f7b8378cc5ae7eb94360ccc6517279784f0ff5..d3b6d53770027fa85cc2fb71f426425fdaa9a144 100644
+index a521639f1fc68137c240792d8b1cddeb3d70e118..7bd3953beb656b0efd09eb5109319500a48cb5fc 100644
 --- a/crates/tinybox-bus/src/lib_tests.rs
 +++ b/crates/tinybox-bus/src/lib_tests.rs
 @@ -51,7 +51,7 @@ fn docker_run_vocabulary_is_typed_bounded_and_additive() -> Result<(), serde_jso
      assert_eq!(METHODS[29], "CleanupDocker");
      assert_eq!(METHODS[30], "RunDockerWithoutWorkspace");
      assert_eq!(METHODS[34], "StartNativeShellExec");
--    assert_eq!(CONTRACT_VERSION, (1, 18));
-+    assert_eq!(CONTRACT_VERSION, (1, 19));
+-    assert_eq!(CONTRACT_VERSION, (1, 19));
++    assert_eq!(CONTRACT_VERSION, (1, 20));
      assert_eq!(MAX_DOCKER_RUN_TIMEOUT_MS, 86_400_000);
      let serialized = serde_json::to_value(&request)?;
      assert_eq!(serialized["read_only_rootfs"], false);
-@@ -129,8 +129,9 @@ fn host_gateway_and_docker_facts_are_additive_and_default_safely() -> Result<(),
+@@ -129,8 +129,10 @@ fn host_gateway_and_docker_facts_are_additive_and_default_safely() -> Result<(),
  #[test]
  fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
  -> Result<(), serde_json::Error> {
--    assert_eq!(CONTRACT_VERSION, (1, 18));
-+    assert_eq!(CONTRACT_VERSION, (1, 19));
+-    assert_eq!(CONTRACT_VERSION, (1, 19));
++    assert_eq!(CONTRACT_VERSION, (1, 20));
      assert!(is_compatible(CONTRACT_VERSION));
++    assert!(!is_compatible((1, 19)));
 +    assert!(!is_compatible((1, 18)));
      assert!(!is_compatible((1, 8)));
      assert!(!is_compatible((1, 7)));
      assert!(!is_compatible((1, 6)));
-@@ -147,7 +148,7 @@ fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
+@@ -147,7 +149,7 @@ fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
          exec_backends: Vec::new(),
          spawn_backends: Vec::new(),
      };
--    let snapshot = serde_json::json!({"contract_version":[1,18],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
-+    let snapshot = serde_json::json!({"contract_version":[1,19],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
+-    let snapshot = serde_json::json!({"contract_version":[1,19],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
++    let snapshot = serde_json::json!({"contract_version":[1,20],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
      assert_eq!(serde_json::to_value(&capabilities)?, snapshot);
      assert_eq!(
          serde_json::from_value::<ModuleCapabilities>(snapshot)?,
-@@ -166,7 +167,7 @@ fn no_workspace_docker_operation_is_present_in_the_contract() {
+@@ -166,7 +168,7 @@ fn no_workspace_docker_operation_is_present_in_the_contract() {
              .count(),
          1
      );
--    assert_eq!(CONTRACT_VERSION, (1, 18));
-+    assert_eq!(CONTRACT_VERSION, (1, 19));
+-    assert_eq!(CONTRACT_VERSION, (1, 19));
++    assert_eq!(CONTRACT_VERSION, (1, 20));
  }
  
  #[test]
-@@ -265,11 +266,14 @@ fn local_grant_configuration_defaults_and_floor_round_trip() -> Result<(), serde
+@@ -265,11 +267,14 @@ fn local_grant_configuration_defaults_and_floor_round_trip() -> Result<(), serde
              prefixes: vec!["/etc".into()],
              credential_roots: vec!["/operator/.ssh".into()],
          },
@@ -929,15 +928,15 @@ index 9c71ac1f3b7be2819f79c6e4c156e6483782798d..57422d5c9613a1cde3d84ee2cb9c1552
      let grants: LocalGrants = proxy.call("ResolveLocalGrants", (request,)).await?;
      if grants.read_only != [allowed] || !grants.read_write.is_empty() {
 diff --git a/crates/tinybox-module/src/tinybus_module/README.md b/crates/tinybox-module/src/tinybus_module/README.md
-index 0350e18dfbc3e84866f830db7fc52951452f81a4..76b7692c02175db8952cdc80af9bb718aa729a80 100644
+index 517a41d1d71b62d12d70504bb9abc65baf9149fc..71d1c381ee510e3dac836da51c5d0aa9220dceca 100644
 --- a/crates/tinybox-module/src/tinybus_module/README.md
 +++ b/crates/tinybox-module/src/tinybus_module/README.md
 @@ -50,7 +50,7 @@ The interface is `ai.tinyhumans.tinybox.Box` at
  | StartNativeShellExec | ShellExecRequest | ProcessRef |
  | ValidateDockerPolicy | DockerPolicyRequest | DockerPolicyReport |
  
--Capabilities advertises contract version 1.18; 1.0 denotes the original
-+Capabilities advertises contract version 1.19; 1.0 denotes the original
+-Capabilities advertises contract version 1.19; 1.0 denotes the original
++Capabilities advertises contract version 1.20; 1.0 denotes the original
  discovery-only surface. Hosts require equal majors and a module minor at least
  as new as their vocabulary, using `tinybox_bus::is_compatible`. Version 1.1
  added reserved resource/process ownership and terminal shutdown; 1.2 adds host
@@ -945,7 +944,7 @@ index 0350e18dfbc3e84866f830db7fc52951452f81a4..76b7692c02175db8952cdc80af9bb718
  resource, rootfs, read-only mount, capability-drop, environment, label, output,
  and timeout behavior remains shared with `RunDocker`.
  
-+Version 1.19 adds optional `allow_unix_paths` to `ResolveLocalGrantsRequest`
++Version 1.20 adds optional `allow_unix_paths` to `ResolveLocalGrantsRequest`
 +and `unix_paths` to `LocalGrants` and `NativeJailConfig`. Unix callers can
 +preserve canonical non-UTF8 paths as raw bytes after host approval. Empty
 +byte groups retain established wire payloads. Module validation checks all
@@ -957,7 +956,7 @@ index 0350e18dfbc3e84866f830db7fc52951452f81a4..76b7692c02175db8952cdc80af9bb718
  the standalone form of the 1.17 check: it lists every way a run's network mode,
  workspace and read-only mounts would weaken isolation, without a daemon or a
 diff --git a/crates/tinybox-module/src/tinybus_module/mod.rs b/crates/tinybox-module/src/tinybus_module/mod.rs
-index 35c9da008e8fbc3861ca14d64cd6278d4a55223a..9e52f666ae5842498ddb87b09e5b10d7d1bbe159 100644
+index fd2e7257486c55ff769c255f1cccec80563edbdf..92a07dd9eb800c0bbe026852baa025708bbc67d9 100644
 --- a/crates/tinybox-module/src/tinybus_module/mod.rs
 +++ b/crates/tinybox-module/src/tinybus_module/mod.rs
 @@ -61,16 +61,43 @@ impl BoxService {
@@ -1640,7 +1639,7 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b412dec3191e1b35427668ea17317f3616143c5
+index 0000000000000000000000000000000000000000..46cbb061fc5a504d550118498ff64b0b0d239b8b
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 @@ -0,0 +1,853 @@
@@ -1972,7 +1971,7 @@ index 0000000000000000000000000000000000000000..5b412dec3191e1b35427668ea17317f3
 +    )?;
 +
 +    let capabilities: tinybox_bus::ModuleCapabilities = proxy.call("Capabilities", ()).await?;
-+    assert_eq!(capabilities.contract_version, (1, 19));
++    assert_eq!(capabilities.contract_version, (1, 20));
 +    match mode {
 +        "utf8" => {
 +            let grants = resolve_grants(&proxy, &home, false).await?;
@@ -2498,7 +2497,7 @@ index 0000000000000000000000000000000000000000..5b412dec3191e1b35427668ea17317f3
 +    Ok(())
 +}
 diff --git a/docs/plans/local-grants.md b/docs/plans/local-grants.md
-index badca58b88ebcf10478e3df949833fe63509a02d..6fba14aa521754f29f15f376481cc0092c250770 100644
+index badca58b88ebcf10478e3df949833fe63509a02d..3063935878a173dcc2d9d10e228a8dedf8316a5a 100644
 --- a/docs/plans/local-grants.md
 +++ b/docs/plans/local-grants.md
 @@ -25,3 +25,24 @@ and verification for the existing discovery slice.
@@ -2506,7 +2505,7 @@ index badca58b88ebcf10478e3df949833fe63509a02d..6fba14aa521754f29f15f376481cc009
  Execution, released-module consumption and OpenHuman adapters are subsequent
  slices and are not represented as delivered by this prerequisite.
 +
-+## Custom Rust homes and Unix grant transport (contract 1.19)
++## Custom Rust homes and Unix grant transport (contract 1.20)
 +
 +1. Reproduce custom UTF8 and Unix-byte Rust home discovery failures against
 +   untouched production using subprocess-seeded public API tests. Reproduce
@@ -2527,7 +2526,7 @@ index badca58b88ebcf10478e3df949833fe63509a02d..6fba14aa521754f29f15f376481cc009
 +   candidate. Publish the reviewed upstream contribution from Sayr.
 +7. Integrate OpenHuman after the accepted TinyBox module release is available.
 diff --git a/docs/plans/native-shell-execution.md b/docs/plans/native-shell-execution.md
-index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..48026e31c419851f1409a8c7ce47c53c7cc4cd38 100644
+index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..aa28da49b6019b16bedf67c20728ad5d29345e65 100644
 --- a/docs/plans/native-shell-execution.md
 +++ b/docs/plans/native-shell-execution.md
 @@ -18,3 +18,19 @@
@@ -2545,13 +2544,13 @@ index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..48026e31c419851f1409a8c7ce47c53c
 +3. Verify the actual shell child sees exact OS bytes, empty homes are unset,
 +   approved overrides win and unrelated ambient names stay excluded.
 +4. Verify the same behavior through a compiled production-admitted module and
-+   Linux confinement using the grants from contract 1.19.
++   Linux confinement using the grants from contract 1.20.
 +
 +5. On macOS, verify byte-exact shell values for invalid UTF8 home names whose
 +   creation fails with EILSEQ, and require discovery to omit unavailable paths.
 +   Retain actual byte-named directories and confinement checks on Linux.
 diff --git a/docs/specs/local-grants.md b/docs/specs/local-grants.md
-index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..eaff1af5dc503f4e689fe4468a0e0adeb64f1968 100644
+index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..3aa86eb7a5b85299af6b94384e3a2277213c76d6 100644
 --- a/docs/specs/local-grants.md
 +++ b/docs/specs/local-grants.md
 @@ -29,7 +29,8 @@ supported escapes and unquoted comments preserve Git pathname semantics.
@@ -2559,7 +2558,7 @@ index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..eaff1af5dc503f4e689fe4468a0e0ade
  UnsupportedOperation instead of incomplete grants.
  
 -The bus rejects non-UTF-8 targets and more than 64 input or final grants.
-+The default bus request rejects non-UTF-8 targets. Contract 1.19 callers can
++The default bus request rejects non-UTF-8 targets. Contract 1.20 callers can
 +opt into raw Unix path grants. The combined grant limit remains 64.
  Missing/protected individual paths are omitted. Discovery is a snapshot; hosts
  must prevent later protected entries or concurrent tree mutation. No kernel deny
@@ -2569,7 +2568,7 @@ index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..eaff1af5dc503f4e689fe4468a0e0ade
  including explicit refusal of unsupported include expansions. No implementation
  crate is needed by a host. Execution and host adapters remain separate work.
 +
-+## Custom Rust homes and Unix grant transport (contract 1.19)
++## Custom Rust homes and Unix grant transport (contract 1.20)
 +
 +Existing absolute nonempty RUSTUP_HOME and CARGO_HOME paths are discovered on the module machine as OS paths. Defaults remain admitted by current toolchain policy. Rustup and selected Cargo bin/config/env/registry/git entries are read-only; credential floors and fixed-state alias protections apply to every selected root. Missing or invalid configured roots are skipped; discovery creates no directories.
 +

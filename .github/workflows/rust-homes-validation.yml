@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: tinyhumansai/tinybox
-          ref: '7ceaf5c3bdf62928955d00547aa47cd399ba7ba3'
+          ref: 'bcea8a774a7c00f30384611727a0ef74c0bc505c'
           path: source
           persist-credentials: false
           submodules: recursive
@@ -46,6 +46,10 @@ jobs:
           cp ../diagnostic/.github/diagnostics/candidate.patch ../evidence/
           git diff --check
           rustc -vV > ../evidence/rustc-version.txt
+      - name: Canonical supply-chain audit
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa
+        with:
+          manifest-path: source/Cargo.toml
       - name: Canonical formatter and Clippy
         working-directory: source
         run: |
@@ -92,7 +96,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: tinyhumansai/tinybox
-          ref: '7ceaf5c3bdf62928955d00547aa47cd399ba7ba3'
+          ref: 'bcea8a774a7c00f30384611727a0ef74c0bc505c'
           path: source
           persist-credentials: false
           submodules: recursive
@@ -136,7 +140,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: tinyhumansai/tinybox
-          ref: '7ceaf5c3bdf62928955d00547aa47cd399ba7ba3'
+          ref: 'bcea8a774a7c00f30384611727a0ef74c0bc505c'
           path: source
           persist-credentials: false
           submodules: recursive
