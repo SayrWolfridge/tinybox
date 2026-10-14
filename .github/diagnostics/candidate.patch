@@ -1494,10 +1494,10 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..0c99d9bda32a69f37c7aa613c5d538e86e3ad0fd
+index 0000000000000000000000000000000000000000..a886af6f7b6c53f506cafb786d7abd22b2d11347
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,735 @@
+@@ -0,0 +1,741 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -1695,16 +1695,14 @@ index 0000000000000000000000000000000000000000..0c99d9bda32a69f37c7aa613c5d538e8
 +        .or_else(|| std::env::var_os("USERPROFILE"))
 +        .map(PathBuf::from)
 +        .ok_or("host home is unavailable before child environment seeding")?;
-+    let rustup_home = std::env::var_os("RUSTUP_HOME")
-+        .map(PathBuf::from)
-+        .unwrap_or_else(|| home.join(".rustup"));
++    let rustup_home =
++        std::env::var_os("RUSTUP_HOME").map_or_else(|| home.join(".rustup"), PathBuf::from);
 +    if !rustup_home.join("settings.toml").is_file() || !rustup_home.join("toolchains").is_dir() {
 +        return Err("installed Rustup home or toolchains are unavailable".into());
 +    }
 +
-+    let cargo_home = std::env::var_os("CARGO_HOME")
-+        .map(PathBuf::from)
-+        .unwrap_or_else(|| home.join(".cargo"));
++    let cargo_home =
++        std::env::var_os("CARGO_HOME").map_or_else(|| home.join(".cargo"), PathBuf::from);
 +    let mut candidates = vec![cargo_home.join("bin/rustup")];
 +    if let Some(path) = std::env::var_os("PATH") {
 +        candidates.extend(std::env::split_paths(&path).map(|directory| directory.join("rustup")));
@@ -1873,8 +1871,8 @@ index 0000000000000000000000000000000000000000..0c99d9bda32a69f37c7aa613c5d538e8
 +    rustup_home: &Path,
 +    cargo_home: &Path,
 +) -> TestResult<()> {
-+    assert!(grants.read_write.is_empty());
-+    assert!(grants.unix_paths.read_write.is_empty());
++    assert_eq!(grants.read_write, Vec::<String>::new());
++    assert_eq!(grants.unix_paths.read_write, Vec::<Vec<u8>>::new());
 +
 +    assert!(
 +        grant_contains(grants, rustup_home)?,
@@ -1972,7 +1970,15 @@ index 0000000000000000000000000000000000000000..0c99d9bda32a69f37c7aa613c5d538e8
 +    let command = r#"printf '%s\000%s' "$RUSTUP_HOME" "$CARGO_HOME""#;
 +    #[cfg(windows)]
 +    let command = "@chcp 65001 >NUL & @echo %RUSTUP_HOME%&@echo %CARGO_HOME%";
-+    let output = run_shell(proxy, workspace, state, command, None, Default::default()).await?;
++    let output = run_shell(
++        proxy,
++        workspace,
++        state,
++        command,
++        None,
++        std::collections::BTreeMap::new(),
++    )
++    .await?;
 +
 +    #[cfg(unix)]
 +    {
