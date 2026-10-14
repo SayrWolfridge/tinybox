@@ -558,8 +558,9 @@ cat "$CARGO_HOME/config.toml" >/dev/null || exit 31
 cat "$CARGO_HOME/env" >/dev/null || exit 32
 cat "$CARGO_HOME/registry/cache-fixture" >/dev/null || exit 33
 cat "$CARGO_HOME/git/cache-fixture" >/dev/null || exit 34
-"$CARGO_HOME/bin/cargo" --version || exit 35
-"$CARGO_HOME/bin/rustc" --version || exit 36
+export PATH="$CARGO_HOME/bin:${PATH:-}"
+cargo --version || exit 35
+rustc --version || exit 36
 if printf denied > "$RUSTUP_HOME/.tinybox-write-probe" 2>/dev/null; then exit 41; fi
 if printf denied > "$CARGO_HOME/config.toml" 2>/dev/null; then exit 42; fi
 if printf denied > "$CARGO_HOME/registry/write-probe" 2>/dev/null; then exit 43; fi
@@ -662,16 +663,17 @@ async fn run_shell(
         }
     })
     .await??;
+    let stderr: Vec<_> = batch
+        .chunks
+        .iter()
+        .filter(|chunk| chunk.stream == tinybox_bus::OutputStream::Stderr)
+        .flat_map(|chunk| chunk.bytes.iter().copied())
+        .collect();
     assert_eq!(
         batch.state,
         tinybox_bus::ExecutionState::Exited { exit_code: 0 },
-        "native shell exited with stderr {:?}",
-        batch
-            .chunks
-            .iter()
-            .filter(|chunk| chunk.stream == tinybox_bus::OutputStream::Stderr)
-            .flat_map(|chunk| chunk.bytes.iter().copied())
-            .collect::<Vec<_>>()
+        "native shell exited with stderr:\n{}",
+        String::from_utf8_lossy(&stderr)
     );
     let output = batch
         .chunks
