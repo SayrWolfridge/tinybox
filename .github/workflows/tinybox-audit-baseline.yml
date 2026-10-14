@@ -1,0 +1,24 @@
+name: TinyBox upstream cargo-deny baseline
+
+on:
+  push:
+    branches:
+      - sayr/rust-homes-audit-baseline
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain-baseline:
+    name: supply-chain baseline at 7ceaf5c
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out untouched upstream base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: SayrWolfridge/tinybox
+          ref: 7ceaf5c3bdf62928955d00547aa47cd399ba7ba3
+          persist-credentials: false
+          submodules: recursive
+      - name: Run canonical cargo-deny action
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa # immutable revision
