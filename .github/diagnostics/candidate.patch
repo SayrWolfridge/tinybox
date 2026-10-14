@@ -1624,7 +1624,7 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..580c671c4405d575d359725aae227ffe75802501
+index 0000000000000000000000000000000000000000..5b412dec3191e1b35427668ea17317f3616143c5
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 @@ -0,0 +1,853 @@
@@ -2063,8 +2063,8 @@ index 0000000000000000000000000000000000000000..580c671c4405d575d359725aae227ffe
 +        };
 +        assert_eq!(
 +            error.raw_os_error(),
-+            Some(92),
-+            "unexpected macOS path error: {error}"
++            Some(2),
++            "filesystem-rejected home should remain absent: {error}"
 +        );
 +        let root = path.as_os_str().as_bytes();
 +        let utf8_grant = grants
