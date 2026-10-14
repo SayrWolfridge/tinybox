@@ -156,6 +156,7 @@ jobs:
           shasum -a 256 -c ../diagnostic/.github/diagnostics/source-hashes.txt | tee ../evidence/source-hash-check.log
           cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee ../evidence/clippy.log
           cargo test --locked -p tinybox-jail --test toolchain_homes -- --nocapture --test-threads=1 2>&1 | tee ../evidence/grants.log
+          cargo test --locked -p tinybox-module --lib -- native_jail::tests --nocapture --test-threads=1 2>&1 | tee ../evidence/native-jail.log
           cargo test --locked -p tinybox-module --lib -- unix_toolchain_environment_is_preserved_for_the_shell_child --nocapture --test-threads=1 2>&1 | tee ../evidence/env.log
           cargo test --locked -p tinybox-module --test rust_homes_manifest_e2e -- --nocapture --test-threads=1 2>&1 | tee ../evidence/manifest.log
           bash scripts/test-features.sh 2>&1 | tee ../evidence/features.log
