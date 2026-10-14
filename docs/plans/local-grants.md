@@ -40,6 +40,9 @@ slices and are not represented as delivered by this prerequisite.
    wire compatibility, malformed paths, combined bounds and approved flags.
 5. Exercise the production-admitted dynamic module with UTF8 and Unix-byte
    homes, actual Cargo/Rust commands and Linux filesystem confinement.
+   On macOS, assert the filesystem rejects invalid UTF8 names with EILSEQ and
+   discovery omits those unavailable homes; preserve byte-exact shell values.
+   On Unix filesystems accepting these names, assert actual byte-path grants.
 6. Run all four canonical checks and the per-file coverage gate for the exact
    candidate. Publish the reviewed upstream contribution from Sayr.
 7. Integrate OpenHuman after the accepted TinyBox module release is available.

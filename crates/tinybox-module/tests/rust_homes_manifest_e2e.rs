@@ -27,10 +27,17 @@ async fn compiled_module_discovers_and_runs_custom_rust_homes() -> TestResult<()
     let utf8 = Fixture::new("utf8", None)?;
     run_child(&utf8, &artifact, "utf8", None)?;
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let bytes = Fixture::new("bytes", None)?;
         run_child(&bytes, &artifact, "bytes", None)?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mac_bytes = Fixture::new("mac-bytes", None)?;
+        assert_macos_rejects_invalid_home_paths(&mac_bytes)?;
+        run_child(&mac_bytes, &artifact, "mac-bytes", None)?;
     }
 
     #[cfg(target_os = "linux")]
@@ -119,6 +126,21 @@ struct Fixture {
     outside_sentinel: PathBuf,
 }
 
+#[cfg(target_os = "macos")]
+fn assert_macos_rejects_invalid_home_paths(fixture: &Fixture) -> TestResult<()> {
+    for path in [&fixture.rustup_home, &fixture.cargo_home] {
+        let error = match fs::create_dir_all(path) {
+            Err(error) => error,
+            Ok(()) => return Err("macOS fixture unexpectedly created an invalid-byte home".into()),
+        };
+        assert_eq!(
+            error.raw_os_error(),
+            Some(92),
+            "unexpected macOS path error: {error}"
+        );
+    }
+    Ok(())
+}
 impl Fixture {
     fn new(kind: &str, rustup_target: Option<&Path>) -> TestResult<Self> {
         let root = tempfile::tempdir()?;
@@ -127,8 +149,10 @@ impl Fixture {
                 OsString::from("rustup-用户"),
                 OsString::from("cargo-данные"),
             ),
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "macos")))]
             "bytes" => (unix_name(b"rustup-\xff"), unix_name(b"cargo-\xfe")),
+            #[cfg(target_os = "macos")]
+            "mac-bytes" => (unix_name(b"rustup-\xff"), unix_name(b"cargo-\xfe")),
             #[cfg(unix)]
             "local-tools" => (OsString::from("rustup-работа"), unix_name(b"cargo-\xfc")),
             #[cfg(unix)]
@@ -137,27 +161,30 @@ impl Fixture {
         };
         let rustup_home = root.path().join(rustup_leaf);
         let cargo_home = root.path().join(cargo_leaf);
+        let create_homes = kind != "mac-bytes";
         if let Some(target) = rustup_target {
             #[cfg(unix)]
             std::os::unix::fs::symlink(target, &rustup_home)?;
             #[cfg(not(unix))]
             return Err("Rustup home symlink fixture requires Unix".into());
-        } else {
+        } else if create_homes {
             fs::create_dir_all(&rustup_home)?;
             fs::write(rustup_home.join("settings.toml"), "version = 12\n")?;
             fs::create_dir_all(rustup_home.join("toolchains"))?;
         }
-        fs::create_dir_all(cargo_home.join("bin"))?;
-        fs::create_dir_all(cargo_home.join("registry"))?;
-        fs::create_dir_all(cargo_home.join("git"))?;
-        fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n")?;
-        fs::write(cargo_home.join("env"), "TINYBOX_FIXTURE=1\n")?;
-        fs::write(cargo_home.join("registry/cache-fixture"), "cache marker\n")?;
-        fs::write(cargo_home.join("git/cache-fixture"), "git marker\n")?;
-        fs::write(
-            cargo_home.join("credentials.toml"),
-            "credential fixture marker\n",
-        )?;
+        if create_homes {
+            fs::create_dir_all(cargo_home.join("bin"))?;
+            fs::create_dir_all(cargo_home.join("registry"))?;
+            fs::create_dir_all(cargo_home.join("git"))?;
+            fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n")?;
+            fs::write(cargo_home.join("env"), "TINYBOX_FIXTURE=1\n")?;
+            fs::write(cargo_home.join("registry/cache-fixture"), "cache marker\n")?;
+            fs::write(cargo_home.join("git/cache-fixture"), "git marker\n")?;
+            fs::write(
+                cargo_home.join("credentials.toml"),
+                "credential fixture marker\n",
+            )?;
+        }
 
         let home = root.path().join("operator-home");
         let workspace = root.path().join("workspace");
@@ -302,6 +329,12 @@ async fn run_module_child(mode: &str) -> TestResult<()> {
             assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
             run_environment_shell(&proxy, &workspace, &state).await?;
         }
+        #[cfg(target_os = "macos")]
+        "mac-bytes" => {
+            let grants = resolve_grants(&proxy, &home, true).await?;
+            assert_macos_byte_homes_omitted(&grants, &rustup_home, &cargo_home)?;
+            run_environment_shell(&proxy, &workspace, &state).await?;
+        }
         "bytes" => {
             let grants = resolve_grants(&proxy, &home, true).await?;
             assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
@@ -382,6 +415,51 @@ async fn resolve_grants(
         .await?)
 }
 
+#[cfg(target_os = "macos")]
+fn assert_macos_byte_homes_omitted(
+    grants: &tinybox_bus::LocalGrants,
+    rustup_home: &Path,
+    cargo_home: &Path,
+) -> TestResult<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    for path in [rustup_home, cargo_home] {
+        let error = match fs::metadata(path) {
+            Err(error) => error,
+            Ok(_) => return Err("resolver created a macOS invalid-byte home".into()),
+        };
+        assert_eq!(
+            error.raw_os_error(),
+            Some(92),
+            "unexpected macOS path error: {error}"
+        );
+        let root = path.as_os_str().as_bytes();
+        let utf8_grant = grants
+            .read_only
+            .iter()
+            .chain(&grants.read_write)
+            .any(|entry| grant_path_is_root_or_descendant(entry.as_bytes(), root));
+        let unix_grant = grants
+            .unix_paths
+            .read_only
+            .iter()
+            .chain(&grants.unix_paths.read_write)
+            .any(|entry| grant_path_is_root_or_descendant(entry, root));
+        assert!(
+            !utf8_grant && !unix_grant,
+            "filesystem-rejected missing home appeared in a grant group: {root:?}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn grant_path_is_root_or_descendant(candidate: &[u8], root: &[u8]) -> bool {
+    candidate == root
+        || candidate
+            .strip_prefix(root)
+            .is_some_and(|suffix| suffix.first() == Some(&b'/'))
+}
 fn assert_selected_entries(
     grants: &tinybox_bus::LocalGrants,
     rustup_home: &Path,
