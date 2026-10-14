@@ -79,13 +79,31 @@ fn opted_in_unix_grants_preserve_path_bytes_and_validate_canonical_targets()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     let root = tempfile::tempdir()?;
-    let file = root
+    let directory = root.path().join("文件");
+    std::fs::create_dir(&directory)?;
+    let bytes = directory.as_os_str().as_bytes().to_vec();
+    let decoded = unix_grants(std::slice::from_ref(&bytes))?;
+    assert_eq!(decoded, vec![directory.canonicalize()?]);
+
+    let invalid_path = root
         .path()
         .join(std::ffi::OsString::from_vec(vec![b'f', 0xff]));
-    std::fs::write(&file, b"data")?;
-    let bytes = file.as_os_str().as_bytes().to_vec();
-    let decoded = unix_grants(std::slice::from_ref(&bytes))?;
-    assert_eq!(decoded, vec![file.canonicalize()?]);
+    #[cfg(target_os = "macos")]
+    {
+        let Err(error) = std::fs::write(&invalid_path, b"data") else {
+            return Err("APFS accepted an invalid UTF-8 filename".into());
+        };
+        assert_eq!(error.raw_os_error(), Some(92));
+        let invalid_bytes = invalid_path.as_os_str().as_bytes().to_vec();
+        assert!(unix_grants(std::slice::from_ref(&invalid_bytes)).is_err());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::fs::write(&invalid_path, b"data")?;
+        let invalid_bytes = invalid_path.as_os_str().as_bytes().to_vec();
+        let decoded = unix_grants(std::slice::from_ref(&invalid_bytes))?;
+        assert_eq!(decoded, vec![invalid_path.canonicalize()?]);
+    }
     Ok(())
 }
 
@@ -139,7 +157,7 @@ fn unavailable_and_noop_backends_never_accept_declared_enforcement()
 #[test]
 fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
 -> std::result::Result<(), Box<dyn std::error::Error>> {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::os::unix::ffi::OsStrExt;
     let root = tempfile::tempdir()?;
     let extra = tempfile::tempdir()?;
     let file = root.path().join("file");
@@ -161,9 +179,7 @@ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
     assert_eq!(jail.root, root.path().canonicalize()?);
     assert_eq!(jail.read_only, vec![file.canonicalize()?]);
     assert_eq!(jail.read_write, vec![extra.path().canonicalize()?]);
-    let byte_file = root
-        .path()
-        .join(std::ffi::OsString::from_vec(vec![b'b', 0xff]));
+    let byte_file = root.path().join("字节");
     std::fs::write(&byte_file, b"bytes")?;
     config.unix_paths.read_only = vec![byte_file.as_os_str().as_bytes().to_vec()];
     let jail = prepare(root.path(), &config, &command, &backend)?;
