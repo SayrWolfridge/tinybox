@@ -1,5 +1,5 @@
 diff --git a/crates/tinybox-bus/src/grants.rs b/crates/tinybox-bus/src/grants.rs
-index 13258b10ee0e378a930ec6387d2a14885f16f2aa..ddbcaf172f18571530b7f1ce6599801f3e08262a 100644
+index 13258b10ee0e378a930ec6387d2a14885f16f2aa..a319d19f22756e67e718da5bb735a247f5de84e8 100644
 --- a/crates/tinybox-bus/src/grants.rs
 +++ b/crates/tinybox-bus/src/grants.rs
 @@ -49,6 +49,9 @@ pub struct ResolveLocalGrantsRequest {
@@ -7,12 +7,12 @@ index 13258b10ee0e378a930ec6387d2a14885f16f2aa..ddbcaf172f18571530b7f1ce6599801f
      /// Host's unconditional protected-path floor.
      pub protected: ProtectedPaths,
 +    /// Permit canonical non-UTF-8 Unix grant paths in `unix_paths`.
-+    #[serde(default, skip_serializing_if = "is_false")]
++    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
 +    pub allow_unix_paths: bool,
  }
  
  /// Canonical existing filesystem grants beyond a workload's writable root.
-@@ -58,4 +61,28 @@ pub struct LocalGrants {
+@@ -58,4 +61,24 @@ pub struct LocalGrants {
      pub read_only: Vec<String>,
      /// Read, executable, and writable paths.
      pub read_write: Vec<String>,
@@ -36,10 +36,6 @@ index 13258b10ee0e378a930ec6387d2a14885f16f2aa..ddbcaf172f18571530b7f1ce6599801f
 +    pub(crate) fn is_empty(&self) -> bool {
 +        self.read_only.is_empty() && self.read_write.is_empty()
 +    }
-+}
-+
-+fn is_false(value: &bool) -> bool {
-+    !value
  }
 diff --git a/crates/tinybox-bus/src/jail.rs b/crates/tinybox-bus/src/jail.rs
 index f75e27cbf23ce5fe696ec2e4f4d6ce9e2ab096b6..2fc1352272895b21a3eb9da6d11206dc487754ba 100644
@@ -1218,7 +1214,7 @@ index 6943cd562831482dac3b33cfd26986062fac88a7..3bd6ddcc767268dc3130d418722305f9
      }
  }
 diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
-index 038a3370ecf785192f2d081f27c9bbe8862a6006..015f935bd47b434225847ceb16a20387ccf368bb 100644
+index 038a3370ecf785192f2d081f27c9bbe8862a6006..67357430a4be3cbda85c12c82f12d054372aaafe 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 @@ -1,5 +1,18 @@
@@ -1327,7 +1323,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..015f935bd47b434225847ceb16a20387
 +            Some("empty") => b"unset|unset|unset".to_vec(),
 +            _ => return Err("unknown native shell child fixture mode".into()),
 +        };
-+        assert!(request.extra_env.get("TINYBOX_UNAPPROVED").is_none());
++        assert!(!request.extra_env.contains_key("TINYBOX_UNAPPROVED"));
 +        assert!(std::env::var_os("TINYBOX_UNAPPROVED").is_some());
 +        let shell = ShellContext::prepare(request, state.path(), &resolved)?;
 +        let runtime = tokio::runtime::Builder::new_current_thread()
