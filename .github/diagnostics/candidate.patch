@@ -685,10 +685,10 @@ index e75dd778fc4df249a29a4b1c94b58277c2b9f645..28634d98f3e8f48b1a82b3b0ae4cd65a
 +}
 diff --git a/crates/tinybox-jail/tests/toolchain_homes.rs b/crates/tinybox-jail/tests/toolchain_homes.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d6526b9e33e
+index 0000000000000000000000000000000000000000..a525d63e99b5bf294bb07911dfdaa2a94330b891
 --- /dev/null
 +++ b/crates/tinybox-jail/tests/toolchain_homes.rs
-@@ -0,0 +1,136 @@
+@@ -0,0 +1,229 @@
 +//! Public resolver regressions for custom Rustup and Cargo homes.
 +use std::ffi::OsStr;
 +use std::fs;
@@ -706,8 +706,10 @@ index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d65
 +    rustup_home: &OsStr,
 +    cargo_home: &OsStr,
 +    fixture_home: &Path,
++    expect_omitted: bool,
 +) -> Result<(), Box<dyn std::error::Error>> {
-+    let output = Command::new(std::env::current_exe()?)
++    let mut command = Command::new(std::env::current_exe()?);
++    command
 +        .arg("--exact")
 +        .arg(test_name)
 +        .arg("--nocapture")
@@ -716,7 +718,11 @@ index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d65
 +        .env("RUSTUP_HOME", rustup_home)
 +        .env("CARGO_HOME", cargo_home)
 +        .env_remove("XDG_CONFIG_HOME")
-+        .output()?;
++        .env_remove("TINYBOX_EXPECT_HOMES_OMITTED");
++    if expect_omitted {
++        command.env("TINYBOX_EXPECT_HOMES_OMITTED", "1");
++    }
++    let output = command.output()?;
 +    let stdout = String::from_utf8_lossy(&output.stdout);
 +    let stderr = String::from_utf8_lossy(&output.stderr);
 +    assert!(
@@ -774,6 +780,36 @@ index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d65
 +    Ok(())
 +}
 +
++fn assert_custom_homes_are_omitted() -> Result<(), Box<dyn std::error::Error>> {
++    let home =
++        PathBuf::from(std::env::var_os("TINYBOX_FIXTURE_HOME").ok_or("missing fixture home")?);
++    let rustup = PathBuf::from(std::env::var_os("RUSTUP_HOME").ok_or("missing RUSTUP_HOME")?);
++    let cargo = PathBuf::from(std::env::var_os("CARGO_HOME").ok_or("missing CARGO_HOME")?);
++    let grants = resolve_local_jail_grants(
++        Some(&home),
++        &LocalGrantConfig::default(),
++        &ProtectedPaths::default(),
++    )?;
++    let grant_reaches = |grant: &Path, root: &Path| grant == root || grant.starts_with(root);
++    assert!(
++        !grants
++            .read_only
++            .iter()
++            .chain(&grants.read_write)
++            .any(|grant| grant_reaches(grant, &rustup)),
++        "invalid or missing Rustup home was granted: {grants:?}"
++    );
++    assert!(
++        !grants
++            .read_only
++            .iter()
++            .chain(&grants.read_write)
++            .any(|grant| grant_reaches(grant, &cargo)),
++        "invalid or missing Cargo home root was granted: {grants:?}"
++    );
++    Ok(())
++}
++
 +#[test]
 +fn custom_utf8_rust_homes_are_discovered_by_public_resolver()
 +-> Result<(), Box<dyn std::error::Error>> {
@@ -794,6 +830,7 @@ index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d65
 +        rustup.as_os_str(),
 +        cargo.as_os_str(),
 +        fixture.path(),
++        false,
 +    )
 +}
 +
@@ -803,6 +840,9 @@ index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d65
 +-> Result<(), Box<dyn std::error::Error>> {
 +    use std::os::unix::ffi::OsStringExt;
 +    if std::env::var_os("TINYBOX_CUSTOM_HOME_CHILD").is_some() {
++        if std::env::var_os("TINYBOX_EXPECT_HOMES_OMITTED").is_some() {
++            return assert_custom_homes_are_omitted();
++        }
 +        return assert_custom_homes_are_granted();
 +    }
 +    let fixture = tempfile::tempdir()?;
@@ -812,17 +852,70 @@ index 0000000000000000000000000000000000000000..57dfb9362c7685f4cd5bd784a2430d65
 +    let cargo = fixture
 +        .path()
 +        .join(std::ffi::OsString::from_vec(b"cargo-\xfe".to_vec()));
-+    fs::create_dir_all(&rustup)?;
-+    fs::create_dir_all(cargo.join("bin"))?;
-+    fs::create_dir_all(cargo.join("registry"))?;
-+    fs::create_dir_all(cargo.join("git"))?;
-+    fs::write(cargo.join("config.toml"), "[net]\noffline = true\n")?;
-+    fs::write(cargo.join("env"), "")?;
++    #[cfg(target_os = "macos")]
++    {
++        let error = match fs::create_dir_all(&rustup) {
++            Ok(()) => return Err("APFS accepted an invalid UTF-8 Rustup path".into()),
++            Err(error) => error,
++        };
++        assert_eq!(
++            error.raw_os_error(),
++            Some(92),
++            "unexpected APFS error: {error}"
++        );
++        let error = match fs::create_dir_all(cargo.join("bin")) {
++            Ok(()) => return Err("APFS accepted an invalid UTF-8 Cargo path".into()),
++            Err(error) => error,
++        };
++        assert_eq!(
++            error.raw_os_error(),
++            Some(92),
++            "unexpected APFS error: {error}"
++        );
++        run_child(
++            "custom_non_utf8_rust_homes_are_discovered_by_public_resolver",
++            rustup.as_os_str(),
++            cargo.as_os_str(),
++            fixture.path(),
++            true,
++        )
++    }
++    #[cfg(not(target_os = "macos"))]
++    {
++        fs::create_dir_all(&rustup)?;
++        fs::create_dir_all(cargo.join("bin"))?;
++        fs::create_dir_all(cargo.join("registry"))?;
++        fs::create_dir_all(cargo.join("git"))?;
++        fs::write(cargo.join("config.toml"), "[net]\noffline = true\n")?;
++        fs::write(cargo.join("env"), "")?;
++        run_child(
++            "custom_non_utf8_rust_homes_are_discovered_by_public_resolver",
++            rustup.as_os_str(),
++            cargo.as_os_str(),
++            fixture.path(),
++            false,
++        )
++    }
++}
++
++#[test]
++fn missing_custom_rust_homes_are_omitted_by_public_resolver()
++-> Result<(), Box<dyn std::error::Error>> {
++    const TEST_NAME: &str = "missing_custom_rust_homes_are_omitted_by_public_resolver";
++    if std::env::var_os("TINYBOX_CUSTOM_HOME_CHILD").is_some() {
++        return assert_custom_homes_are_omitted();
++    }
++    let fixture = tempfile::tempdir()?;
++    let rustup = fixture.path().join("missing-rustup");
++    let cargo = fixture.path().join("missing-cargo");
++    assert!(!rustup.exists());
++    assert!(!cargo.exists());
 +    run_child(
-+        "custom_non_utf8_rust_homes_are_discovered_by_public_resolver",
++        TEST_NAME,
 +        rustup.as_os_str(),
 +        cargo.as_os_str(),
 +        fixture.path(),
++        true,
 +    )
 +}
 diff --git a/crates/tinybox-module/examples/verify_module.rs b/crates/tinybox-module/examples/verify_module.rs
@@ -1533,10 +1626,10 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c71c280030
+index 0000000000000000000000000000000000000000..d9013b019da3b5592d39ce40ca908ee6cfd09e46
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,772 @@
+@@ -0,0 +1,850 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -1566,10 +1659,17 @@ index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c7
 +    let utf8 = Fixture::new("utf8", None)?;
 +    run_child(&utf8, &artifact, "utf8", None)?;
 +
-+    #[cfg(unix)]
++    #[cfg(all(unix, not(target_os = "macos")))]
 +    {
 +        let bytes = Fixture::new("bytes", None)?;
 +        run_child(&bytes, &artifact, "bytes", None)?;
++    }
++
++    #[cfg(target_os = "macos")]
++    {
++        let mac_bytes = Fixture::new("mac-bytes", None)?;
++        assert_macos_rejects_invalid_home_paths(&mac_bytes)?;
++        run_child(&mac_bytes, &artifact, "mac-bytes", None)?;
 +    }
 +
 +    #[cfg(target_os = "linux")]
@@ -1658,6 +1758,21 @@ index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c7
 +    outside_sentinel: PathBuf,
 +}
 +
++#[cfg(target_os = "macos")]
++fn assert_macos_rejects_invalid_home_paths(fixture: &Fixture) -> TestResult<()> {
++    for path in [&fixture.rustup_home, &fixture.cargo_home] {
++        let error = match fs::create_dir_all(path) {
++            Err(error) => error,
++            Ok(()) => return Err("macOS fixture unexpectedly created an invalid-byte home".into()),
++        };
++        assert_eq!(
++            error.raw_os_error(),
++            Some(92),
++            "unexpected macOS path error: {error}"
++        );
++    }
++    Ok(())
++}
 +impl Fixture {
 +    fn new(kind: &str, rustup_target: Option<&Path>) -> TestResult<Self> {
 +        let root = tempfile::tempdir()?;
@@ -1666,8 +1781,10 @@ index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c7
 +                OsString::from("rustup-用户"),
 +                OsString::from("cargo-данные"),
 +            ),
-+            #[cfg(unix)]
++            #[cfg(all(unix, not(target_os = "macos")))]
 +            "bytes" => (unix_name(b"rustup-\xff"), unix_name(b"cargo-\xfe")),
++            #[cfg(target_os = "macos")]
++            "mac-bytes" => (unix_name(b"rustup-\xff"), unix_name(b"cargo-\xfe")),
 +            #[cfg(unix)]
 +            "local-tools" => (OsString::from("rustup-работа"), unix_name(b"cargo-\xfc")),
 +            #[cfg(unix)]
@@ -1676,27 +1793,30 @@ index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c7
 +        };
 +        let rustup_home = root.path().join(rustup_leaf);
 +        let cargo_home = root.path().join(cargo_leaf);
++        let create_homes = kind != "mac-bytes";
 +        if let Some(target) = rustup_target {
 +            #[cfg(unix)]
 +            std::os::unix::fs::symlink(target, &rustup_home)?;
 +            #[cfg(not(unix))]
 +            return Err("Rustup home symlink fixture requires Unix".into());
-+        } else {
++        } else if create_homes {
 +            fs::create_dir_all(&rustup_home)?;
 +            fs::write(rustup_home.join("settings.toml"), "version = 12\n")?;
 +            fs::create_dir_all(rustup_home.join("toolchains"))?;
 +        }
-+        fs::create_dir_all(cargo_home.join("bin"))?;
-+        fs::create_dir_all(cargo_home.join("registry"))?;
-+        fs::create_dir_all(cargo_home.join("git"))?;
-+        fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n")?;
-+        fs::write(cargo_home.join("env"), "TINYBOX_FIXTURE=1\n")?;
-+        fs::write(cargo_home.join("registry/cache-fixture"), "cache marker\n")?;
-+        fs::write(cargo_home.join("git/cache-fixture"), "git marker\n")?;
-+        fs::write(
-+            cargo_home.join("credentials.toml"),
-+            "credential fixture marker\n",
-+        )?;
++        if create_homes {
++            fs::create_dir_all(cargo_home.join("bin"))?;
++            fs::create_dir_all(cargo_home.join("registry"))?;
++            fs::create_dir_all(cargo_home.join("git"))?;
++            fs::write(cargo_home.join("config.toml"), "[net]\noffline = true\n")?;
++            fs::write(cargo_home.join("env"), "TINYBOX_FIXTURE=1\n")?;
++            fs::write(cargo_home.join("registry/cache-fixture"), "cache marker\n")?;
++            fs::write(cargo_home.join("git/cache-fixture"), "git marker\n")?;
++            fs::write(
++                cargo_home.join("credentials.toml"),
++                "credential fixture marker\n",
++            )?;
++        }
 +
 +        let home = root.path().join("operator-home");
 +        let workspace = root.path().join("workspace");
@@ -1841,6 +1961,12 @@ index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c7
 +            assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
 +            run_environment_shell(&proxy, &workspace, &state).await?;
 +        }
++        #[cfg(target_os = "macos")]
++        "mac-bytes" => {
++            let grants = resolve_grants(&proxy, &home, true).await?;
++            assert_macos_byte_homes_omitted(&grants, &rustup_home, &cargo_home)?;
++            run_environment_shell(&proxy, &workspace, &state).await?;
++        }
 +        "bytes" => {
 +            let grants = resolve_grants(&proxy, &home, true).await?;
 +            assert_selected_entries(&grants, &rustup_home, &cargo_home)?;
@@ -1921,6 +2047,51 @@ index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c7
 +        .await?)
 +}
 +
++#[cfg(target_os = "macos")]
++fn assert_macos_byte_homes_omitted(
++    grants: &tinybox_bus::LocalGrants,
++    rustup_home: &Path,
++    cargo_home: &Path,
++) -> TestResult<()> {
++    use std::os::unix::ffi::OsStrExt;
++
++    for path in [rustup_home, cargo_home] {
++        let error = match fs::metadata(path) {
++            Err(error) => error,
++            Ok(_) => return Err("resolver created a macOS invalid-byte home".into()),
++        };
++        assert_eq!(
++            error.raw_os_error(),
++            Some(92),
++            "unexpected macOS path error: {error}"
++        );
++        let root = path.as_os_str().as_bytes();
++        let utf8_grant = grants
++            .read_only
++            .iter()
++            .chain(&grants.read_write)
++            .any(|entry| grant_path_is_root_or_descendant(entry.as_bytes(), root));
++        let unix_grant = grants
++            .unix_paths
++            .read_only
++            .iter()
++            .chain(&grants.unix_paths.read_write)
++            .any(|entry| grant_path_is_root_or_descendant(entry, root));
++        assert!(
++            !utf8_grant && !unix_grant,
++            "filesystem-rejected missing home appeared in a grant group: {root:?}"
++        );
++    }
++    Ok(())
++}
++
++#[cfg(target_os = "macos")]
++fn grant_path_is_root_or_descendant(candidate: &[u8], root: &[u8]) -> bool {
++    candidate == root
++        || candidate
++            .strip_prefix(root)
++            .is_some_and(|suffix| suffix.first() == Some(&b'/'))
++}
 +fn assert_selected_entries(
 +    grants: &tinybox_bus::LocalGrants,
 +    rustup_home: &Path,
@@ -2310,10 +2481,10 @@ index 0000000000000000000000000000000000000000..e23b5cec4162ce47b7b213e7adb0a8c7
 +    Ok(())
 +}
 diff --git a/docs/plans/local-grants.md b/docs/plans/local-grants.md
-index badca58b88ebcf10478e3df949833fe63509a02d..9e560482dc21302b5bcefbc06627f6dd4fcb06f7 100644
+index badca58b88ebcf10478e3df949833fe63509a02d..6fba14aa521754f29f15f376481cc0092c250770 100644
 --- a/docs/plans/local-grants.md
 +++ b/docs/plans/local-grants.md
-@@ -25,3 +25,21 @@ and verification for the existing discovery slice.
+@@ -25,3 +25,24 @@ and verification for the existing discovery slice.
  Discovery implementation is complete subject to review and recorded validation.
  Execution, released-module consumption and OpenHuman adapters are subsequent
  slices and are not represented as delivered by this prerequisite.
@@ -2332,14 +2503,17 @@ index badca58b88ebcf10478e3df949833fe63509a02d..9e560482dc21302b5bcefbc06627f6dd
 +   wire compatibility, malformed paths, combined bounds and approved flags.
 +5. Exercise the production-admitted dynamic module with UTF8 and Unix-byte
 +   homes, actual Cargo/Rust commands and Linux filesystem confinement.
++   On macOS, assert the filesystem rejects invalid UTF8 names with EILSEQ and
++   discovery omits those unavailable homes; preserve byte-exact shell values.
++   On Unix filesystems accepting these names, assert actual byte-path grants.
 +6. Run all four canonical checks and the per-file coverage gate for the exact
 +   candidate. Publish the reviewed upstream contribution from Sayr.
 +7. Integrate OpenHuman after the accepted TinyBox module release is available.
 diff --git a/docs/plans/native-shell-execution.md b/docs/plans/native-shell-execution.md
-index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..c9772e045386f83723c0ffd5de2246071a0fc64d 100644
+index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..48026e31c419851f1409a8c7ce47c53c7cc4cd38 100644
 --- a/docs/plans/native-shell-execution.md
 +++ b/docs/plans/native-shell-execution.md
-@@ -18,3 +18,15 @@
+@@ -18,3 +18,19 @@
  
  Implementation is complete; upstream review and cross-platform CI remain. No host gitlink or availability claim is
  part of this upstream slice.
@@ -2355,6 +2529,10 @@ index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..c9772e045386f83723c0ffd5de224607
 +   approved overrides win and unrelated ambient names stay excluded.
 +4. Verify the same behavior through a compiled production-admitted module and
 +   Linux confinement using the grants from contract 1.19.
++
++5. On macOS, verify byte-exact shell values for invalid UTF8 home names whose
++   creation fails with EILSEQ, and require discovery to omit unavailable paths.
++   Retain actual byte-named directories and confinement checks on Linux.
 diff --git a/docs/specs/local-grants.md b/docs/specs/local-grants.md
 index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..eaff1af5dc503f4e689fe4468a0e0adeb64f1968 100644
 --- a/docs/specs/local-grants.md

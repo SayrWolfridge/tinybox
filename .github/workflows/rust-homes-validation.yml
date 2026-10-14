@@ -143,3 +143,45 @@ jobs:
             evidence
             source/coverage.json
           retention-days: 30
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: diagnostic
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tinyhumansai/tinybox
+          ref: '7ceaf5c3bdf62928955d00547aa47cd399ba7ba3'
+          path: source
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: source
+          shared-key: tinybox-macos-rust-homes
+      - name: Exact candidate macOS regression and feature matrix
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p ../evidence
+          git apply ../diagnostic/.github/diagnostics/candidate.patch
+          shasum -a 256 -c ../diagnostic/.github/diagnostics/source-hashes.txt | tee ../evidence/source-hash-check.log
+          cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee ../evidence/clippy.log
+          cargo test --locked -p tinybox-jail --test toolchain_homes -- --nocapture --test-threads=1 2>&1 | tee ../evidence/grants.log
+          cargo test --locked -p tinybox-module --lib -- unix_toolchain_environment_is_preserved_for_the_shell_child --nocapture --test-threads=1 2>&1 | tee ../evidence/env.log
+          cargo test --locked -p tinybox-module --test rust_homes_manifest_e2e -- --nocapture --test-threads=1 2>&1 | tee ../evidence/manifest.log
+          bash scripts/test-features.sh 2>&1 | tee ../evidence/features.log
+          shasum -a 256 -c ../diagnostic/.github/diagnostics/source-hashes.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: tinybox-macos-validation
+          path: evidence
+          retention-days: 30
