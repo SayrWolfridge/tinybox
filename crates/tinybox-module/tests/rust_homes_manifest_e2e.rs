@@ -195,16 +195,14 @@ fn installed_toolchain() -> TestResult<(PathBuf, PathBuf, String)> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .ok_or("host home is unavailable before child environment seeding")?;
-    let rustup_home = std::env::var_os("RUSTUP_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".rustup"));
+    let rustup_home =
+        std::env::var_os("RUSTUP_HOME").map_or_else(|| home.join(".rustup"), PathBuf::from);
     if !rustup_home.join("settings.toml").is_file() || !rustup_home.join("toolchains").is_dir() {
         return Err("installed Rustup home or toolchains are unavailable".into());
     }
 
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".cargo"));
+    let cargo_home =
+        std::env::var_os("CARGO_HOME").map_or_else(|| home.join(".cargo"), PathBuf::from);
     let mut candidates = vec![cargo_home.join("bin/rustup")];
     if let Some(path) = std::env::var_os("PATH") {
         candidates.extend(std::env::split_paths(&path).map(|directory| directory.join("rustup")));
@@ -373,8 +371,8 @@ fn assert_selected_entries(
     rustup_home: &Path,
     cargo_home: &Path,
 ) -> TestResult<()> {
-    assert!(grants.read_write.is_empty());
-    assert!(grants.unix_paths.read_write.is_empty());
+    assert_eq!(grants.read_write, Vec::<String>::new());
+    assert_eq!(grants.unix_paths.read_write, Vec::<Vec<u8>>::new());
 
     assert!(
         grant_contains(grants, rustup_home)?,
@@ -472,7 +470,15 @@ async fn run_environment_shell(
     let command = r#"printf '%s\000%s' "$RUSTUP_HOME" "$CARGO_HOME""#;
     #[cfg(windows)]
     let command = "@chcp 65001 >NUL & @echo %RUSTUP_HOME%&@echo %CARGO_HOME%";
-    let output = run_shell(proxy, workspace, state, command, None, Default::default()).await?;
+    let output = run_shell(
+        proxy,
+        workspace,
+        state,
+        command,
+        None,
+        std::collections::BTreeMap::new(),
+    )
+    .await?;
 
     #[cfg(unix)]
     {
