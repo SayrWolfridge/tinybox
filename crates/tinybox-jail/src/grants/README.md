@@ -2,7 +2,8 @@
 
 resolve_local_jail_grants returns canonical existing JailGrants through the
 workspace Result type. ResolveLocalGrants exposes the same behavior through
-the module, with UTF-8 paths and an input/final 64-grant limit.
+the module, with UTF-8 string paths by default. Contract 1.19 callers can opt
+into raw non-UTF8 Unix path groups; all paths share the input/final 64-grant limit.
 
 mod.rs orchestrates discovery and read-only precedence; types.rs holds results.
 floor.rs matches components, adjacent pairs, protected prefixes and credential

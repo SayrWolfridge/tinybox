@@ -1,5 +1,6 @@
 //! Native jail vocabulary is serialized independently of implementation types.
 use super::*;
+use crate::{LocalGrants, UnixPathGrants};
 
 #[test]
 fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), serde_json::Error> {
