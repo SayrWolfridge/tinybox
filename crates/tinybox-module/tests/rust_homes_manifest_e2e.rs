@@ -129,9 +129,8 @@ struct Fixture {
 #[cfg(target_os = "macos")]
 fn assert_macos_rejects_invalid_home_paths(fixture: &Fixture) -> TestResult<()> {
     for path in [&fixture.rustup_home, &fixture.cargo_home] {
-        let error = match fs::create_dir_all(path) {
-            Err(error) => error,
-            Ok(()) => return Err("macOS fixture unexpectedly created an invalid-byte home".into()),
+        let Err(error) = fs::create_dir_all(path) else {
+            return Err("macOS fixture unexpectedly created an invalid-byte home".into());
         };
         assert_eq!(
             error.raw_os_error(),
@@ -264,11 +263,29 @@ fn installed_toolchain() -> TestResult<(PathBuf, PathBuf, String)> {
     Ok((rustup_home.canonicalize()?, rustup, toolchain))
 }
 
+async fn wait_for_module_registration(client: &Connection) -> TestResult<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if client
+                .list_names()
+                .await?
+                .iter()
+                .any(|name| name.as_str() == tinybox_bus::INTERFACE)
+            {
+                return Ok::<(), tinybus::Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await??;
+    Ok(())
+}
 async fn run_module_child(mode: &str) -> TestResult<()> {
     let artifact = env_path("TINYBOX_E2E_ARTIFACT")?;
     let home = env_path("TINYBOX_E2E_HOME")?;
     let workspace = env_path("TINYBOX_E2E_WORKSPACE")?;
     let state = env_path("TINYBOX_E2E_STATE")?;
+    #[cfg(target_os = "linux")]
     let outside = env_path("TINYBOX_E2E_OUTSIDE")?;
     let rustup_home = env_path("RUSTUP_HOME")?;
     let cargo_home = env_path("CARGO_HOME")?;
@@ -301,20 +318,7 @@ async fn run_module_child(mode: &str) -> TestResult<()> {
     assert_eq!(declared, tinybox_bus::METHODS);
 
     let client = Connection::connect(bus.connect().await?).await?;
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if client
-                .list_names()
-                .await?
-                .iter()
-                .any(|name| name.as_str() == tinybox_bus::INTERFACE)
-            {
-                return Ok::<(), tinybus::Error>(());
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await??;
+    wait_for_module_registration(&client).await?;
     let proxy = client.proxy(
         tinybox_bus::INTERFACE,
         tinybox_bus::OBJECT_PATH,
@@ -424,9 +428,8 @@ fn assert_macos_byte_homes_omitted(
     use std::os::unix::ffi::OsStrExt;
 
     for path in [rustup_home, cargo_home] {
-        let error = match fs::metadata(path) {
-            Err(error) => error,
-            Ok(_) => return Err("resolver created a macOS invalid-byte home".into()),
+        let Err(error) = fs::metadata(path) else {
+            return Err("resolver created a macOS invalid-byte home".into());
         };
         assert_eq!(
             error.raw_os_error(),

@@ -163,18 +163,16 @@ fn custom_non_utf8_rust_homes_are_discovered_by_public_resolver()
         .join(std::ffi::OsString::from_vec(b"cargo-\xfe".to_vec()));
     #[cfg(target_os = "macos")]
     {
-        let error = match fs::create_dir_all(&rustup) {
-            Ok(()) => return Err("APFS accepted an invalid UTF-8 Rustup path".into()),
-            Err(error) => error,
+        let Err(error) = fs::create_dir_all(&rustup) else {
+            return Err("APFS accepted an invalid UTF-8 Rustup path".into());
         };
         assert_eq!(
             error.raw_os_error(),
             Some(92),
             "unexpected APFS error: {error}"
         );
-        let error = match fs::create_dir_all(cargo.join("bin")) {
-            Ok(()) => return Err("APFS accepted an invalid UTF-8 Cargo path".into()),
-            Err(error) => error,
+        let Err(error) = fs::create_dir_all(cargo.join("bin")) else {
+            return Err("APFS accepted an invalid UTF-8 Cargo path".into());
         };
         assert_eq!(
             error.raw_os_error(),
