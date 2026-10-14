@@ -1064,7 +1064,7 @@ index 86a33d9c5312b08f77d368efa0e06ef38818d55a..f63255f26aa3afb4852067c5ce805436
      paths
          .iter()
 diff --git a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
-index 577d1c4adfacedd85511bfb9a88c9a435d5af150..92d3c0d91b750eb716b2d4f4a3f5430c17f81b7a 100644
+index 577d1c4adfacedd85511bfb9a88c9a435d5af150..041b7f93c1d19611298c48d241329e7ba27bb3fa 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
 @@ -39,6 +39,7 @@ fn config() -> NativeJailConfig {
@@ -1140,11 +1140,18 @@ index 577d1c4adfacedd85511bfb9a88c9a435d5af150..92d3c0d91b750eb716b2d4f4a3f5430c
  #[test]
  fn unavailable_and_noop_backends_never_accept_declared_enforcement()
  -> std::result::Result<(), Box<dyn std::error::Error>> {
-@@ -101,6 +160,14 @@ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
+@@ -80,6 +139,7 @@ fn unavailable_and_noop_backends_never_accept_declared_enforcement()
+ #[test]
+ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
+ -> std::result::Result<(), Box<dyn std::error::Error>> {
++    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+     let root = tempfile::tempdir()?;
+     let extra = tempfile::tempdir()?;
+     let file = root.path().join("file");
+@@ -101,6 +161,13 @@ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
      assert_eq!(jail.root, root.path().canonicalize()?);
      assert_eq!(jail.read_only, vec![file.canonicalize()?]);
      assert_eq!(jail.read_write, vec![extra.path().canonicalize()?]);
-+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
 +    let byte_file = root
 +        .path()
 +        .join(std::ffi::OsString::from_vec(vec![b'b', 0xff]));
@@ -1233,7 +1240,7 @@ index 6943cd562831482dac3b33cfd26986062fac88a7..854a8d4a4d24399a468c1f1fcae504dc
      }
  }
 diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
-index 038a3370ecf785192f2d081f27c9bbe8862a6006..17639efc35faebd401d562f691d01111416e7af3 100644
+index 038a3370ecf785192f2d081f27c9bbe8862a6006..0ed9654c573384d04bc2b1694a3b21d70d58fad9 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 @@ -1,5 +1,18 @@
@@ -1306,6 +1313,31 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..17639efc35faebd401d562f691d01111
  }
  
 +#[cfg(unix)]
++fn toolchain_environment_child(
++    mode: &str,
++    rustup: std::ffi::OsString,
++    cargo: std::ffi::OsString,
++) -> std::io::Result<std::process::Output> {
++    let mut command = std::process::Command::new(std::env::current_exe()?);
++    command
++        .args([
++            "unix_toolchain_environment_is_preserved_for_the_shell_child",
++            "--nocapture",
++        ])
++        .env_clear()
++        .env("TINYBOX_NATIVE_ENV_TEST", mode)
++        .env("TINYBOX_UNAPPROVED", "ambient-secret")
++        .env("RUSTUP_HOME", rustup)
++        .env("CARGO_HOME", cargo);
++    if let Some(path) = std::env::var_os("PATH") {
++        command.env("PATH", path);
++    }
++    if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
++        command.env("LLVM_PROFILE_FILE", profile_file);
++    }
++    command.output()
++}
++#[cfg(unix)]
 +#[test]
 +fn unix_toolchain_environment_is_preserved_for_the_shell_child()
 +-> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1363,31 +1395,6 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..17639efc35faebd401d562f691d01111
 +        return Ok(());
 +    }
 +
-+    fn run_child(
-+        mode: &str,
-+        rustup: std::ffi::OsString,
-+        cargo: std::ffi::OsString,
-+    ) -> std::io::Result<std::process::Output> {
-+        let mut command = std::process::Command::new(std::env::current_exe()?);
-+        command
-+            .args([
-+                "unix_toolchain_environment_is_preserved_for_the_shell_child",
-+                "--nocapture",
-+            ])
-+            .env_clear()
-+            .env("TINYBOX_NATIVE_ENV_TEST", mode)
-+            .env("TINYBOX_UNAPPROVED", "ambient-secret")
-+            .env("RUSTUP_HOME", rustup)
-+            .env("CARGO_HOME", cargo);
-+        if let Some(path) = std::env::var_os("PATH") {
-+            command.env("PATH", path);
-+        }
-+        if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
-+            command.env("LLVM_PROFILE_FILE", profile_file);
-+        }
-+        command.output()
-+    }
-+
 +    for (mode, rustup, cargo) in [
 +        (
 +            "raw",
@@ -1401,7 +1408,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..17639efc35faebd401d562f691d01111
 +        ),
 +        ("empty", "".into(), "".into()),
 +    ] {
-+        let output = run_child(mode, rustup, cargo)?;
++        let output = toolchain_environment_child(mode, rustup, cargo)?;
 +        assert!(
 +            String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
 +            "native shell child fixture {mode} did not run exactly one matching test: {}",
