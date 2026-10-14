@@ -685,10 +685,10 @@ index e75dd778fc4df249a29a4b1c94b58277c2b9f645..28634d98f3e8f48b1a82b3b0ae4cd65a
 +}
 diff --git a/crates/tinybox-jail/tests/toolchain_homes.rs b/crates/tinybox-jail/tests/toolchain_homes.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..a525d63e99b5bf294bb07911dfdaa2a94330b891
+index 0000000000000000000000000000000000000000..bc49bda4b14c10e367c0582934b9fa5f7aaad69b
 --- /dev/null
 +++ b/crates/tinybox-jail/tests/toolchain_homes.rs
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,227 @@
 +//! Public resolver regressions for custom Rustup and Cargo homes.
 +use std::ffi::OsStr;
 +use std::fs;
@@ -854,18 +854,16 @@ index 0000000000000000000000000000000000000000..a525d63e99b5bf294bb07911dfdaa2a9
 +        .join(std::ffi::OsString::from_vec(b"cargo-\xfe".to_vec()));
 +    #[cfg(target_os = "macos")]
 +    {
-+        let error = match fs::create_dir_all(&rustup) {
-+            Ok(()) => return Err("APFS accepted an invalid UTF-8 Rustup path".into()),
-+            Err(error) => error,
++        let Err(error) = fs::create_dir_all(&rustup) else {
++            return Err("APFS accepted an invalid UTF-8 Rustup path".into());
 +        };
 +        assert_eq!(
 +            error.raw_os_error(),
 +            Some(92),
 +            "unexpected APFS error: {error}"
 +        );
-+        let error = match fs::create_dir_all(cargo.join("bin")) {
-+            Ok(()) => return Err("APFS accepted an invalid UTF-8 Cargo path".into()),
-+            Err(error) => error,
++        let Err(error) = fs::create_dir_all(cargo.join("bin")) else {
++            return Err("APFS accepted an invalid UTF-8 Cargo path".into());
 +        };
 +        assert_eq!(
 +            error.raw_os_error(),
@@ -1626,10 +1624,10 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..d9013b019da3b5592d39ce40ca908ee6cfd09e46
+index 0000000000000000000000000000000000000000..580c671c4405d575d359725aae227ffe75802501
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,850 @@
+@@ -0,0 +1,853 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -1761,9 +1759,8 @@ index 0000000000000000000000000000000000000000..d9013b019da3b5592d39ce40ca908ee6
 +#[cfg(target_os = "macos")]
 +fn assert_macos_rejects_invalid_home_paths(fixture: &Fixture) -> TestResult<()> {
 +    for path in [&fixture.rustup_home, &fixture.cargo_home] {
-+        let error = match fs::create_dir_all(path) {
-+            Err(error) => error,
-+            Ok(()) => return Err("macOS fixture unexpectedly created an invalid-byte home".into()),
++        let Err(error) = fs::create_dir_all(path) else {
++            return Err("macOS fixture unexpectedly created an invalid-byte home".into());
 +        };
 +        assert_eq!(
 +            error.raw_os_error(),
@@ -1896,11 +1893,29 @@ index 0000000000000000000000000000000000000000..d9013b019da3b5592d39ce40ca908ee6
 +    Ok((rustup_home.canonicalize()?, rustup, toolchain))
 +}
 +
++async fn wait_for_module_registration(client: &Connection) -> TestResult<()> {
++    tokio::time::timeout(Duration::from_secs(5), async {
++        loop {
++            if client
++                .list_names()
++                .await?
++                .iter()
++                .any(|name| name.as_str() == tinybox_bus::INTERFACE)
++            {
++                return Ok::<(), tinybus::Error>(());
++            }
++            tokio::task::yield_now().await;
++        }
++    })
++    .await??;
++    Ok(())
++}
 +async fn run_module_child(mode: &str) -> TestResult<()> {
 +    let artifact = env_path("TINYBOX_E2E_ARTIFACT")?;
 +    let home = env_path("TINYBOX_E2E_HOME")?;
 +    let workspace = env_path("TINYBOX_E2E_WORKSPACE")?;
 +    let state = env_path("TINYBOX_E2E_STATE")?;
++    #[cfg(target_os = "linux")]
 +    let outside = env_path("TINYBOX_E2E_OUTSIDE")?;
 +    let rustup_home = env_path("RUSTUP_HOME")?;
 +    let cargo_home = env_path("CARGO_HOME")?;
@@ -1933,20 +1948,7 @@ index 0000000000000000000000000000000000000000..d9013b019da3b5592d39ce40ca908ee6
 +    assert_eq!(declared, tinybox_bus::METHODS);
 +
 +    let client = Connection::connect(bus.connect().await?).await?;
-+    tokio::time::timeout(Duration::from_secs(5), async {
-+        loop {
-+            if client
-+                .list_names()
-+                .await?
-+                .iter()
-+                .any(|name| name.as_str() == tinybox_bus::INTERFACE)
-+            {
-+                return Ok::<(), tinybus::Error>(());
-+            }
-+            tokio::task::yield_now().await;
-+        }
-+    })
-+    .await??;
++    wait_for_module_registration(&client).await?;
 +    let proxy = client.proxy(
 +        tinybox_bus::INTERFACE,
 +        tinybox_bus::OBJECT_PATH,
@@ -2056,9 +2058,8 @@ index 0000000000000000000000000000000000000000..d9013b019da3b5592d39ce40ca908ee6
 +    use std::os::unix::ffi::OsStrExt;
 +
 +    for path in [rustup_home, cargo_home] {
-+        let error = match fs::metadata(path) {
-+            Err(error) => error,
-+            Ok(_) => return Err("resolver created a macOS invalid-byte home".into()),
++        let Err(error) = fs::metadata(path) else {
++            return Err("resolver created a macOS invalid-byte home".into());
 +        };
 +        assert_eq!(
 +            error.raw_os_error(),

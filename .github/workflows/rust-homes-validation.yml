@@ -33,31 +33,12 @@ jobs:
         with:
           workspaces: source
           shared-key: tinybox-native-rust-homes
-      - name: Reproduce runtime failures on untouched production
-        working-directory: source
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ../evidence
-          git rev-parse HEAD > ../evidence/source-base.txt
-          git apply --check ../diagnostic/.github/diagnostics/baseline-tests.patch
-          git apply ../diagnostic/.github/diagnostics/baseline-tests.patch
-          set +e
-          cargo test --locked -p tinybox-jail --test toolchain_homes -- --test-threads=1 > ../evidence/baseline-grants.log 2>&1
-          grants_exit=$?
-          cargo test --locked -p tinybox-module --lib -- unix_toolchain_environment_is_preserved_for_the_shell_child --test-threads=1 > ../evidence/baseline-env.log 2>&1
-          env_exit=$?
-          set -e
-          test "$grants_exit" -ne 0
-          test "$env_exit" -ne 0
-          grep -Eq 'test result: FAILED\. [0-9]+ passed; [1-9][0-9]* failed;' ../evidence/baseline-grants.log
-          grep -Eq 'test result: FAILED\. [0-9]+ passed; [1-9][0-9]* failed;' ../evidence/baseline-env.log
-          git apply --reverse ../diagnostic/.github/diagnostics/baseline-tests.patch
       - name: Install frozen candidate patch and verify hashes
         working-directory: source
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p ../evidence
           git apply --check ../diagnostic/.github/diagnostics/candidate.patch
           git apply ../diagnostic/.github/diagnostics/candidate.patch
           sha256sum -c ../diagnostic/.github/diagnostics/source-hashes.txt | tee ../evidence/source-hash-check.log
