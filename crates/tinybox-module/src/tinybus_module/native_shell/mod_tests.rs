@@ -333,7 +333,7 @@ fn unix_toolchain_environment_is_preserved_for_the_shell_child()
             Some("empty") => b"unset|unset|unset".to_vec(),
             _ => return Err("unknown native shell child fixture mode".into()),
         };
-        assert!(request.extra_env.get("TINYBOX_UNAPPROVED").is_none());
+        assert!(!request.extra_env.contains_key("TINYBOX_UNAPPROVED"));
         assert!(std::env::var_os("TINYBOX_UNAPPROVED").is_some());
         let shell = ShellContext::prepare(request, state.path(), &resolved)?;
         let runtime = tokio::runtime::Builder::new_current_thread()

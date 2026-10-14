@@ -50,7 +50,7 @@ pub struct ResolveLocalGrantsRequest {
     /// Host's unconditional protected-path floor.
     pub protected: ProtectedPaths,
     /// Permit canonical non-UTF-8 Unix grant paths in `unix_paths`.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_unix_paths: bool,
 }
 
@@ -81,8 +81,4 @@ impl UnixPathGrants {
     pub(crate) fn is_empty(&self) -> bool {
         self.read_only.is_empty() && self.read_write.is_empty()
     }
-}
-
-fn is_false(value: &bool) -> bool {
-    !value
 }
