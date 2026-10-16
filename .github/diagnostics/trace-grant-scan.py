@@ -16,3 +16,10 @@ needle='        let grants = grants.map_err(|_| {'
 assert s.count(needle)==1
 s=s.replace(needle,'        eprintln!("GRANT_SCAN blocking resolver returned");\n'+needle)
 p.write_text(s)
+
+p=Path("crates/tinybox-module/tests/rust_homes_manifest_e2e.rs")
+s=p.read_text()
+needle='    let stderr = String::from_utf8_lossy(&output.stderr);'
+assert s.count(needle)==1
+s=s.replace(needle,needle+'\n    eprintln!("GRANT_SCAN child mode={mode} stderr:\\n{stderr}");')
+p.write_text(s)
