@@ -38,7 +38,7 @@ index 13258b10ee0e378a930ec6387d2a14885f16f2aa..a319d19f22756e67e718da5bb735a247
 +    }
  }
 diff --git a/crates/tinybox-bus/src/jail.rs b/crates/tinybox-bus/src/jail.rs
-index f75e27cbf23ce5fe696ec2e4f4d6ce9e2ab096b6..2fc1352272895b21a3eb9da6d11206dc487754ba 100644
+index 6a5fe2879a94553b6c96f0fca36cbc637e612173..9fbed4b6e74291bd7d068b20569c8bbb00077171 100644
 --- a/crates/tinybox-bus/src/jail.rs
 +++ b/crates/tinybox-bus/src/jail.rs
 @@ -19,6 +19,9 @@ pub struct NativeJailConfig {
@@ -52,7 +52,7 @@ index f75e27cbf23ce5fe696ec2e4f4d6ce9e2ab096b6..2fc1352272895b21a3eb9da6d11206dc
      pub allow_net: bool,
      /// Whether child processes are permitted.
 diff --git a/crates/tinybox-bus/src/jail_tests.rs b/crates/tinybox-bus/src/jail_tests.rs
-index f1c52617f38d10414be01bf6c09358716737de9c..a95fed226b3d369b3060cd29cbfa0584c602972e 100644
+index b080dc8749ee81e2c34c3b29911d4df8436aa53d..ec4b6577a2a239f58973a1845e71ccca22d2e40b 100644
 --- a/crates/tinybox-bus/src/jail_tests.rs
 +++ b/crates/tinybox-bus/src/jail_tests.rs
 @@ -1,5 +1,6 @@
@@ -62,11 +62,10 @@ index f1c52617f38d10414be01bf6c09358716737de9c..a95fed226b3d369b3060cd29cbfa0584
  
  #[test]
  fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), serde_json::Error> {
-@@ -17,3 +18,42 @@ fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), ser
-     );
+@@ -18,6 +19,45 @@ fn native_jail_request_keeps_explicit_enforcement_and_grants() -> Result<(), ser
      Ok(())
  }
-+
+ 
 +#[test]
 +fn unix_path_fields_default_and_empty_values_keep_legacy_wire_shape()
 +-> Result<(), serde_json::Error> {
@@ -105,8 +104,12 @@ index f1c52617f38d10414be01bf6c09358716737de9c..a95fed226b3d369b3060cd29cbfa0584
 +    assert_eq!(serde_json::to_value(grants)?, value);
 +    Ok(())
 +}
++
+ #[test]
+ fn deny_read_defaults_empty_and_round_trips() -> Result<(), serde_json::Error> {
+     let mut value = serde_json::json!({
 diff --git a/crates/tinybox-bus/src/lib.rs b/crates/tinybox-bus/src/lib.rs
-index abc1792298c00d4ce427a013997ceb2e7ca2e090..8aefd7f793723830317c9d25477dc5889b79526c 100644
+index 7ee961426bfe0efe8c91a28bae2d791f77d0b18a..427567aa161280b13a06080388348ede7f32ac8d 100644
 --- a/crates/tinybox-bus/src/lib.rs
 +++ b/crates/tinybox-bus/src/lib.rs
 @@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
@@ -120,60 +123,62 @@ index abc1792298c00d4ce427a013997ceb2e7ca2e090..8aefd7f793723830317c9d25477dc588
  
  mod jail;
  pub use jail::{JailEnforcement, NativeJailConfig};
-@@ -66,7 +68,8 @@ pub use files::{
- /// suppression for a native shell child; ignored elsewhere).
- /// 1.19 adds `NetworkPolicy::Allowlist` and the observational
- /// [`SandboxEvent`] vocabulary (`Started`, `Denied`, `LimitHit`, `Exited`).
--pub const CONTRACT_VERSION: (u32, u32) = (1, 19);
-+/// 1.20 adds opted-in byte-preserving Unix grant transport.
-+pub const CONTRACT_VERSION: (u32, u32) = (1, 20);
+@@ -78,7 +80,8 @@ pub use files::{
+ /// `ReadStdio`, `CloseStdin`, `KillStdio` and `StdioStatus`, which run one
+ /// program inside a mandatory native jail and stream its stdin, stdout and
+ /// stderr over the bus.
+-pub const CONTRACT_VERSION: (u32, u32) = (1, 21);
++/// 1.22 adds opted-in byte-preserving Unix grant transport.
++pub const CONTRACT_VERSION: (u32, u32) = (1, 22);
  
  /// Whether this host vocabulary can bind to a module's advertised version.
  /// The major must match and the module's minor must include every host member.
 diff --git a/crates/tinybox-bus/src/lib_tests.rs b/crates/tinybox-bus/src/lib_tests.rs
-index a521639f1fc68137c240792d8b1cddeb3d70e118..7bd3953beb656b0efd09eb5109319500a48cb5fc 100644
+index 0ceea50dbef5985b93e9f5c0527c16ac0cee7b1b..daaf1a76d0c63e560537ac7bc46c549e1973093e 100644
 --- a/crates/tinybox-bus/src/lib_tests.rs
 +++ b/crates/tinybox-bus/src/lib_tests.rs
 @@ -51,7 +51,7 @@ fn docker_run_vocabulary_is_typed_bounded_and_additive() -> Result<(), serde_jso
      assert_eq!(METHODS[29], "CleanupDocker");
      assert_eq!(METHODS[30], "RunDockerWithoutWorkspace");
      assert_eq!(METHODS[34], "StartNativeShellExec");
--    assert_eq!(CONTRACT_VERSION, (1, 19));
-+    assert_eq!(CONTRACT_VERSION, (1, 20));
+-    assert_eq!(CONTRACT_VERSION, (1, 21));
++    assert_eq!(CONTRACT_VERSION, (1, 22));
      assert_eq!(MAX_DOCKER_RUN_TIMEOUT_MS, 86_400_000);
      let serialized = serde_json::to_value(&request)?;
      assert_eq!(serialized["read_only_rootfs"], false);
-@@ -129,8 +129,10 @@ fn host_gateway_and_docker_facts_are_additive_and_default_safely() -> Result<(),
+@@ -129,8 +129,12 @@ fn host_gateway_and_docker_facts_are_additive_and_default_safely() -> Result<(),
  #[test]
  fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
  -> Result<(), serde_json::Error> {
--    assert_eq!(CONTRACT_VERSION, (1, 19));
-+    assert_eq!(CONTRACT_VERSION, (1, 20));
+-    assert_eq!(CONTRACT_VERSION, (1, 21));
++    assert_eq!(CONTRACT_VERSION, (1, 22));
      assert!(is_compatible(CONTRACT_VERSION));
++    assert!(!is_compatible((1, 21)));
++    assert!(!is_compatible((1, 20)));
 +    assert!(!is_compatible((1, 19)));
 +    assert!(!is_compatible((1, 18)));
      assert!(!is_compatible((1, 8)));
      assert!(!is_compatible((1, 7)));
      assert!(!is_compatible((1, 6)));
-@@ -147,7 +149,7 @@ fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
+@@ -147,7 +151,7 @@ fn version_and_capability_wire_snapshot_preserve_contract_compatibility()
          exec_backends: Vec::new(),
          spawn_backends: Vec::new(),
      };
--    let snapshot = serde_json::json!({"contract_version":[1,19],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
-+    let snapshot = serde_json::json!({"contract_version":[1,20],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
+-    let snapshot = serde_json::json!({"contract_version":[1,21],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
++    let snapshot = serde_json::json!({"contract_version":[1,22],"create_backends":["passthrough"],"exec_backends":[],"spawn_backends":[]});
      assert_eq!(serde_json::to_value(&capabilities)?, snapshot);
      assert_eq!(
          serde_json::from_value::<ModuleCapabilities>(snapshot)?,
-@@ -166,7 +168,7 @@ fn no_workspace_docker_operation_is_present_in_the_contract() {
+@@ -166,7 +170,7 @@ fn no_workspace_docker_operation_is_present_in_the_contract() {
              .count(),
          1
      );
--    assert_eq!(CONTRACT_VERSION, (1, 19));
-+    assert_eq!(CONTRACT_VERSION, (1, 20));
+-    assert_eq!(CONTRACT_VERSION, (1, 21));
++    assert_eq!(CONTRACT_VERSION, (1, 22));
  }
  
  #[test]
-@@ -265,11 +267,14 @@ fn local_grant_configuration_defaults_and_floor_round_trip() -> Result<(), serde
+@@ -265,11 +269,14 @@ fn local_grant_configuration_defaults_and_floor_round_trip() -> Result<(), serde
              prefixes: vec!["/etc".into()],
              credential_roots: vec!["/operator/.ssh".into()],
          },
@@ -188,6 +193,18 @@ index a521639f1fc68137c240792d8b1cddeb3d70e118..7bd3953beb656b0efd09eb5109319500
      Ok(())
  }
  
+diff --git a/crates/tinybox-bus/src/stdio_tests.rs b/crates/tinybox-bus/src/stdio_tests.rs
+index d1c3586f0a61fdb40cd1e3cf32bd6072965a83dc..c5dfdd90b85925ed8cef52b2b3de6d6d76335845 100644
+--- a/crates/tinybox-bus/src/stdio_tests.rs
++++ b/crates/tinybox-bus/src/stdio_tests.rs
+@@ -6,6 +6,7 @@ fn jail() -> NativeJailConfig {
+     NativeJailConfig {
+         read_only: Vec::new(),
+         read_write: Vec::new(),
++        unix_paths: crate::UnixPathGrants::default(),
+         allow_net: false,
+         allow_subprocess: false,
+         enforcement: crate::JailEnforcement::Enforced,
 diff --git a/crates/tinybox-jail/src/grants/README.md b/crates/tinybox-jail/src/grants/README.md
 index d3e638cc1977608f4e9f6bb8ba037c22d8804b8c..ac657f4048dd16cbbf434ab0c218d8fc7009ecc6 100644
 --- a/crates/tinybox-jail/src/grants/README.md
@@ -928,23 +945,23 @@ index 9c71ac1f3b7be2819f79c6e4c156e6483782798d..57422d5c9613a1cde3d84ee2cb9c1552
      let grants: LocalGrants = proxy.call("ResolveLocalGrants", (request,)).await?;
      if grants.read_only != [allowed] || !grants.read_write.is_empty() {
 diff --git a/crates/tinybox-module/src/tinybus_module/README.md b/crates/tinybox-module/src/tinybus_module/README.md
-index 517a41d1d71b62d12d70504bb9abc65baf9149fc..71d1c381ee510e3dac836da51c5d0aa9220dceca 100644
+index d1e4462a2709b00af7f639cddace43c16365e884..78db76901011da3c99f7222a185749a2e4380a7f 100644
 --- a/crates/tinybox-module/src/tinybus_module/README.md
 +++ b/crates/tinybox-module/src/tinybus_module/README.md
-@@ -50,7 +50,7 @@ The interface is `ai.tinyhumans.tinybox.Box` at
- | StartNativeShellExec | ShellExecRequest | ProcessRef |
- | ValidateDockerPolicy | DockerPolicyRequest | DockerPolicyReport |
+@@ -56,7 +56,7 @@ The interface is `ai.tinyhumans.tinybox.Box` at
+ | KillStdio | ProcessRef | () |
+ | StdioStatus | ProcessRef | StdioStatus |
  
--Capabilities advertises contract version 1.19; 1.0 denotes the original
-+Capabilities advertises contract version 1.20; 1.0 denotes the original
+-Capabilities advertises contract version 1.21; 1.0 denotes the original
++Capabilities advertises contract version 1.22; 1.0 denotes the original
  discovery-only surface. Hosts require equal majors and a module minor at least
  as new as their vocabulary, using `tinybox_bus::is_compatible`. Version 1.1
  added reserved resource/process ownership and terminal shutdown; 1.2 adds host
-@@ -103,6 +103,14 @@ existing callers; when true, the command runs through `sh -lc` rather than
+@@ -109,6 +109,14 @@ existing callers; when true, the command runs through `sh -lc` rather than
  resource, rootfs, read-only mount, capability-drop, environment, label, output,
  and timeout behavior remains shared with `RunDocker`.
  
-+Version 1.20 adds optional `allow_unix_paths` to `ResolveLocalGrantsRequest`
++Version 1.22 adds optional `allow_unix_paths` to `ResolveLocalGrantsRequest`
 +and `unix_paths` to `LocalGrants` and `NativeJailConfig`. Unix callers can
 +preserve canonical non-UTF8 paths as raw bytes after host approval. Empty
 +byte groups retain established wire payloads. Module validation checks all
@@ -956,10 +973,10 @@ index 517a41d1d71b62d12d70504bb9abc65baf9149fc..71d1c381ee510e3dac836da51c5d0aa9
  the standalone form of the 1.17 check: it lists every way a run's network mode,
  workspace and read-only mounts would weaken isolation, without a daemon or a
 diff --git a/crates/tinybox-module/src/tinybus_module/mod.rs b/crates/tinybox-module/src/tinybus_module/mod.rs
-index fd2e7257486c55ff769c255f1cccec80563edbdf..92a07dd9eb800c0bbe026852baa025708bbc67d9 100644
+index e8d9070fed33e6d894e781214a870e4f6bfa3472..17fc2796110767c6dd37712a3c0e720ea84bceab 100644
 --- a/crates/tinybox-module/src/tinybus_module/mod.rs
 +++ b/crates/tinybox-module/src/tinybus_module/mod.rs
-@@ -61,16 +61,43 @@ impl BoxService {
+@@ -62,16 +62,43 @@ impl BoxService {
      }
  }
  
@@ -1013,7 +1030,7 @@ index fd2e7257486c55ff769c255f1cccec80563edbdf..92a07dd9eb800c0bbe026852baa02570
  }
  
  #[tinybus::interface(name = "ai.tinyhumans.tinybox.Box")]
-@@ -102,6 +129,7 @@ impl BoxService {
+@@ -103,6 +130,7 @@ impl BoxService {
                  "too many local grant paths",
              ));
          }
@@ -1021,7 +1038,7 @@ index fd2e7257486c55ff769c255f1cccec80563edbdf..92a07dd9eb800c0bbe026852baa02570
          let grants = tokio::task::spawn_blocking(move || {
              tinybox_jail::grants::resolve_local_jail_grants(
                  request.home.as_deref().map(std::path::Path::new),
-@@ -125,9 +153,16 @@ impl BoxService {
+@@ -126,9 +154,16 @@ impl BoxService {
                  "too many discovered local grant paths",
              ));
          }
@@ -1041,7 +1058,7 @@ index fd2e7257486c55ff769c255f1cccec80563edbdf..92a07dd9eb800c0bbe026852baa02570
      }
      /// Report native jail enforcement facts without starting a workload.
 diff --git a/crates/tinybox-module/src/tinybus_module/mod_tests.rs b/crates/tinybox-module/src/tinybus_module/mod_tests.rs
-index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413bfb1f33c0 100644
+index 34180e9c9bcf807653832d8958f22bcc99d11098..73e2cf8b3b70e38167eb118f0c6bd19ee1d8372e 100644
 --- a/crates/tinybox-module/src/tinybus_module/mod_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/mod_tests.rs
 @@ -242,6 +242,7 @@ async fn new_module_operations_dispatch_and_preserve_validation_errors() -> tiny
@@ -1052,7 +1069,7 @@ index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413b
                  allow_net: false,
                  allow_subprocess: false,
                  enforcement: tinybox_bus::JailEnforcement::Declared,
-@@ -923,6 +924,7 @@ async fn local_grant_discovery_refuses_home_ancestors_of_credentials()
+@@ -924,6 +925,7 @@ async fn local_grant_discovery_refuses_home_ancestors_of_credentials()
                  ],
                  ..tinybox_bus::ProtectedPaths::default()
              },
@@ -1060,7 +1077,7 @@ index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413b
          })
          .await?;
      assert_eq!(
-@@ -949,6 +951,7 @@ async fn local_grant_discovery_rejects_excessive_requested_grants() {
+@@ -950,6 +952,7 @@ async fn local_grant_discovery_rejects_excessive_requested_grants() {
                  ..tinybox_bus::LocalGrantConfig::default()
              },
              protected: tinybox_bus::ProtectedPaths::default(),
@@ -1068,7 +1085,7 @@ index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413b
          })
          .await;
      assert!(result.is_err());
-@@ -962,13 +965,25 @@ fn local_grant_discovery_rejects_non_utf8_canonical_targets()
+@@ -963,13 +966,25 @@ fn local_grant_discovery_rejects_non_utf8_canonical_targets()
      // APFS refuses invalid UTF-8 filenames. Supply the canonical path directly
      // at the serialization boundary instead of depending on filesystem encoding.
      let target = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', b'd', 0xff]));
@@ -1095,7 +1112,7 @@ index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413b
  #[tokio::test]
  async fn local_grant_discovery_bounds_final_toolchain_and_extra_grants()
  -> Result<(), Box<dyn std::error::Error>> {
-@@ -988,6 +1003,7 @@ async fn local_grant_discovery_bounds_final_toolchain_and_extra_grants()
+@@ -989,6 +1004,7 @@ async fn local_grant_discovery_bounds_final_toolchain_and_extra_grants()
                  ..tinybox_bus::LocalGrantConfig::default()
              },
              protected: tinybox_bus::ProtectedPaths::default(),
@@ -1103,7 +1120,7 @@ index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413b
          })
          .await;
      assert!(
-@@ -1015,6 +1031,7 @@ async fn local_grant_discovery_accepts_exactly_the_final_limit()
+@@ -1016,6 +1032,7 @@ async fn local_grant_discovery_accepts_exactly_the_final_limit()
                  ..tinybox_bus::LocalGrantConfig::default()
              },
              protected: tinybox_bus::ProtectedPaths::default(),
@@ -1111,7 +1128,7 @@ index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413b
          })
          .await?;
      assert_eq!(result.read_only.len(), tinybox_bus::MAX_NATIVE_JAIL_GRANTS);
-@@ -1036,6 +1053,7 @@ async fn unsupported_git_include_expansions_refuse_the_whole_discovery()
+@@ -1037,6 +1054,7 @@ async fn unsupported_git_include_expansions_refuse_the_whole_discovery()
                  home: Some(home.path().to_str().ok_or("non-UTF8 fixture")?.into()),
                  config: tinybox_bus::LocalGrantConfig::default(),
                  protected: tinybox_bus::ProtectedPaths::default(),
@@ -1119,25 +1136,32 @@ index f6ca1cc135f974d2ebce5018d7c2fe7a8286e2af..d09c484b4448efcd2c784c71e248413b
              })
              .await;
          assert!(
+@@ -1306,6 +1324,7 @@ async fn stdio_members_refuse_unknown_handles_without_starting_anything() -> tin
+         jail: NativeJailConfig {
+             read_only: Vec::new(),
+             read_write: Vec::new(),
++            unix_paths: tinybox_bus::UnixPathGrants::default(),
+             allow_net: false,
+             allow_subprocess: false,
+             enforcement: JailEnforcement::Enforced,
 diff --git a/crates/tinybox-module/src/tinybus_module/native_jail.rs b/crates/tinybox-module/src/tinybus_module/native_jail.rs
-index 86a33d9c5312b08f77d368efa0e06ef38818d55a..f63255f26aa3afb4852067c5ce8054369ebeff2b 100644
+index be000af1ca30a81b1ac460756fd179670d7842e0..f99f96f6051dfd861acddbac3bdb94db6f3da0e1 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_jail.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_jail.rs
-@@ -19,7 +19,12 @@ pub(super) fn prepare(
+@@ -19,7 +19,11 @@ pub(super) fn prepare(
      if config.require_process_isolation && !backend.is_suitable_for_untrusted_code() {
          return Err(unavailable());
      }
--    if config.read_only.len() + config.read_write.len() > tinybox_bus::MAX_NATIVE_JAIL_GRANTS {
+-    if config.read_only.len() + config.read_write.len() + config.deny_read.len()
 +    if config.read_only.len()
 +        + config.read_write.len()
 +        + config.unix_paths.read_only.len()
 +        + config.unix_paths.read_write.len()
-+        > tinybox_bus::MAX_NATIVE_JAIL_GRANTS
-+    {
++        + config.deny_read.len()
+         > tinybox_bus::MAX_NATIVE_JAIL_GRANTS
+     {
          return Err(invalid());
-     }
-     let root = root.canonicalize().map_err(|_| invalid())?;
-@@ -39,6 +44,10 @@ pub(super) fn prepare(
+@@ -41,6 +45,10 @@ pub(super) fn prepare(
      jail.allow_subprocess = config.allow_subprocess;
      jail.read_only = grants(&config.read_only)?;
      jail.read_write = grants(&config.read_write)?;
@@ -1145,10 +1169,10 @@ index 86a33d9c5312b08f77d368efa0e06ef38818d55a..f63255f26aa3afb4852067c5ce805436
 +        .extend(unix_grants(&config.unix_paths.read_only)?);
 +    jail.read_write
 +        .extend(unix_grants(&config.unix_paths.read_write)?);
-     match config.enforcement {
-         JailEnforcement::Enforced => backend.require(&jail).map_err(|_| unavailable())?,
-         JailEnforcement::Declared => {
-@@ -54,6 +63,36 @@ pub(super) fn prepare(
+     jail.deny_read = denials(&config.deny_read)?;
+     // A denial over the root or a writable grant would leave the command no
+     // workspace; that is a host error, not a weaker jail.
+@@ -78,6 +86,36 @@ pub(super) fn prepare(
      }
      Ok(jail)
  }
@@ -1186,10 +1210,10 @@ index 86a33d9c5312b08f77d368efa0e06ef38818d55a..f63255f26aa3afb4852067c5ce805436
      paths
          .iter()
 diff --git a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
-index 577d1c4adfacedd85511bfb9a88c9a435d5af150..b19a46cef6dcf561b9db373c836e29dd9cc08019 100644
+index d6e83b7d38224afee2c73074e0030a14dbb13a97..9a5403f796438654540da02b583efc44f4b24d87 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
-@@ -39,6 +39,7 @@ fn config() -> NativeJailConfig {
+@@ -42,6 +42,7 @@ fn config() -> NativeJailConfig {
      NativeJailConfig {
          read_only: vec![],
          read_write: vec![],
@@ -1197,7 +1221,7 @@ index 577d1c4adfacedd85511bfb9a88c9a435d5af150..b19a46cef6dcf561b9db373c836e29dd
          allow_net: false,
          allow_subprocess: false,
          enforcement: JailEnforcement::Enforced,
-@@ -57,6 +58,82 @@ fn native_grants_reject_relative_parent_null_and_missing_paths() {
+@@ -61,6 +62,82 @@ fn native_grants_reject_relative_parent_null_and_missing_paths() {
          assert!(grants(&[path.into()]).is_err());
      }
  }
@@ -1280,7 +1304,7 @@ index 577d1c4adfacedd85511bfb9a88c9a435d5af150..b19a46cef6dcf561b9db373c836e29dd
  #[test]
  fn unavailable_and_noop_backends_never_accept_declared_enforcement()
  -> std::result::Result<(), Box<dyn std::error::Error>> {
-@@ -80,6 +157,7 @@ fn unavailable_and_noop_backends_never_accept_declared_enforcement()
+@@ -84,6 +161,7 @@ fn unavailable_and_noop_backends_never_accept_declared_enforcement()
  #[test]
  fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
  -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1288,7 +1312,7 @@ index 577d1c4adfacedd85511bfb9a88c9a435d5af150..b19a46cef6dcf561b9db373c836e29dd
      let root = tempfile::tempdir()?;
      let extra = tempfile::tempdir()?;
      let file = root.path().join("file");
-@@ -101,6 +179,11 @@ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
+@@ -105,6 +183,11 @@ fn approved_grants_preserve_flags_and_preflight_refuses_weaker_facts()
      assert_eq!(jail.root, root.path().canonicalize()?);
      assert_eq!(jail.read_only, vec![file.canonicalize()?]);
      assert_eq!(jail.read_write, vec![extra.path().canonicalize()?]);
@@ -1300,6 +1324,59 @@ index 577d1c4adfacedd85511bfb9a88c9a435d5af150..b19a46cef6dcf561b9db373c836e29dd
      assert!(!jail.allow_net && !jail.allow_subprocess);
      config.require_process_isolation = true;
      assert!(prepare(root.path(), &config, &command, &backend).is_err());
+@@ -247,6 +330,18 @@ fn denials_are_canonicalized_and_refused_where_a_backend_cannot_keep_them()
+     assert_eq!(jail.deny_read.len(), 2);
+     config.read_only.clear();
+ 
++    // Byte grants follow the same backend denial policy after decoding.
++    use std::os::unix::ffi::OsStrExt;
++    config.unix_paths.read_only = vec![home.path().as_os_str().as_bytes().to_vec()];
++    assert!(prepare(&root, &config, &command, &backend("fixture")).is_err());
++    let jail = prepare(&root, &config, &command, &backend("seatbelt"))?;
++    assert_eq!(jail.deny_read.len(), 2);
++    config.unix_paths.read_only.clear();
++    config.deny_read = vec![path(&secrets)];
++    config.unix_paths.read_write = vec![secrets.as_os_str().as_bytes().to_vec()];
++    assert!(prepare(&root, &config, &command, &backend("seatbelt")).is_err());
++    config.unix_paths.read_write.clear();
++
+     // A denial over the root or a writable grant is refused everywhere.
+     for denied in [path(home.path()), path(&root)] {
+         config.deny_read = vec![denied];
+@@ -264,3 +359,33 @@ fn denials_are_canonicalized_and_refused_where_a_backend_cannot_keep_them()
+     }
+     Ok(())
+ }
++
++#[cfg(unix)]
++#[test]
++fn native_jail_counts_denials_with_utf8_and_byte_grants()
++-> std::result::Result<(), Box<dyn std::error::Error>> {
++    use std::os::unix::ffi::OsStrExt;
++    let root = tempfile::tempdir()?;
++    let root_path = root.path().canonicalize()?;
++    let mut command = tinybox_core::ExecRequest::new(["irrelevant"]);
++    command.cwd = Some(root_path.clone());
++    let backend = Backend {
++        available: true,
++        suitable: false,
++        name: "fixture",
++        full: true,
++    };
++    let mut config = config();
++    config.read_only =
++        vec![root_path.to_string_lossy().into_owned(); tinybox_bus::MAX_NATIVE_JAIL_GRANTS - 2];
++    config.unix_paths.read_only = vec![root_path.as_os_str().as_bytes().to_vec()];
++    let missing = root_path
++        .join("missing-denial")
++        .to_string_lossy()
++        .into_owned();
++    config.deny_read = vec![missing.clone()];
++    assert!(prepare(&root_path, &config, &command, &backend).is_ok());
++    config.deny_read.push(missing);
++    assert!(prepare(&root_path, &config, &command, &backend).is_err());
++    Ok(())
++}
 diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/README.md b/crates/tinybox-module/src/tinybus_module/native_shell/README.md
 index 33e1b9a2235978fbba64e252f85db28d3515bd8b..e09274cefc40ce5c8f7eb552fc3fbe9d561a4d26 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_shell/README.md
@@ -1378,7 +1455,7 @@ index 6943cd562831482dac3b33cfd26986062fac88a7..854a8d4a4d24399a468c1f1fcae504dc
      }
  }
 diff --git a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
-index 038a3370ecf785192f2d081f27c9bbe8862a6006..0ed9654c573384d04bc2b1694a3b21d70d58fad9 100644
+index b8f6823e0677834b961afd3a86641259f5bdf3df..e696c95336d3c322ed65f374864d758cd3df55ec 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_shell/mod_tests.rs
 @@ -1,5 +1,18 @@
@@ -1420,7 +1497,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..0ed9654c573384d04bc2b1694a3b21d7
          allow_net: false,
          allow_subprocess: false,
          enforcement: tinybox_bus::JailEnforcement::Enforced,
-@@ -256,20 +273,139 @@ fn native_shell_preserves_resource_environment_and_request_overrides()
+@@ -257,20 +274,139 @@ fn native_shell_preserves_resource_environment_and_request_overrides()
          .insert("OVERRIDE".into(), "request".into());
      let shell = ShellContext::prepare(request, state.path(), &resolved)?;
      assert_eq!(
@@ -1563,7 +1640,7 @@ index 038a3370ecf785192f2d081f27c9bbe8862a6006..0ed9654c573384d04bc2b1694a3b21d7
  #[test]
  fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_overrides()
  -> std::result::Result<(), Box<dyn std::error::Error>> {
-@@ -288,7 +424,7 @@ fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_override
+@@ -289,7 +425,7 @@ fn python_utf8_defaults_apply_only_when_requested_and_yield_to_approved_override
          shell
              .environment
              .get("PYTHONIOENCODING")
@@ -1585,8 +1662,20 @@ index e2c6c408190aca3bfed404988d26c8da8dd7e679..08a118b75f9ce1097898759c89558bf4
      pub(super) scratch: std::sync::Arc<std::sync::Mutex<Option<tempfile::TempDir>>>,
      pub(super) scratch_cleanup_failed: std::sync::Arc<std::sync::atomic::AtomicBool>,
      pub(super) host: ShellHost,
+diff --git a/crates/tinybox-module/src/tinybus_module/resources_stdio_tests.rs b/crates/tinybox-module/src/tinybus_module/resources_stdio_tests.rs
+index 255e19d51eada30c438f43b7b03e66b44f4f7a2a..a7126d14273deb1d9e5d325938525644e152ff9f 100644
+--- a/crates/tinybox-module/src/tinybus_module/resources_stdio_tests.rs
++++ b/crates/tinybox-module/src/tinybus_module/resources_stdio_tests.rs
+@@ -62,6 +62,7 @@ fn jail_config() -> tinybox_bus::NativeJailConfig {
+     tinybox_bus::NativeJailConfig {
+         read_only: Vec::new(),
+         read_write: Vec::new(),
++        unix_paths: tinybox_bus::UnixPathGrants::default(),
+         allow_net: true,
+         allow_subprocess: true,
+         enforcement: tinybox_bus::JailEnforcement::Enforced,
 diff --git a/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs b/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs
-index 3b11b765b373e0a9187ff3724b76f20dcc676825..09740e85b88ca2ea3831b899cc7b157a69ce47da 100644
+index c8e532702f5ca452794926c6823f5e4f0eb07c52..2c68c30019b4c5dc11f074e7730aa549118a2286 100644
 --- a/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/resources_stream_tests.rs
 @@ -283,6 +283,7 @@ async fn jailed_start_rejects_missing_grants_without_consuming_reservation() ->
@@ -1597,6 +1686,18 @@ index 3b11b765b373e0a9187ff3724b76f20dcc676825..09740e85b88ca2ea3831b899cc7b157a
          allow_net: true,
          allow_subprocess: true,
          enforcement: tinybox_bus::JailEnforcement::Declared,
+diff --git a/crates/tinybox-module/src/tinybus_module/stdio_tests.rs b/crates/tinybox-module/src/tinybus_module/stdio_tests.rs
+index 4e19c697d16cac7147bcc66eecc4e83dfe77f5eb..115fdb294a3dbf8a27479df9df3b739b4733d14e 100644
+--- a/crates/tinybox-module/src/tinybus_module/stdio_tests.rs
++++ b/crates/tinybox-module/src/tinybus_module/stdio_tests.rs
+@@ -30,6 +30,7 @@ fn request() -> StdioStartRequest {
+         jail: NativeJailConfig {
+             read_only: Vec::new(),
+             read_write: Vec::new(),
++            unix_paths: tinybox_bus::UnixPathGrants::default(),
+             allow_net: true,
+             allow_subprocess: true,
+             enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/grants_manifest_e2e.rs b/crates/tinybox-module/tests/grants_manifest_e2e.rs
 index 446216287ae0221753f36d9ec5cdc2f49af71eb5..05147fb4206455e37e49413705ba302d2524ca04 100644
 --- a/crates/tinybox-module/tests/grants_manifest_e2e.rs
@@ -1618,7 +1719,7 @@ index 446216287ae0221753f36d9ec5cdc2f49af71eb5..05147fb4206455e37e49413705ba302d
              )
              .await;
 diff --git a/crates/tinybox-module/tests/module_e2e.rs b/crates/tinybox-module/tests/module_e2e.rs
-index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f93c94ca3 100644
+index 8fb6eaf30b946ccfbd0b067dfac5c1f391c3fc5a..52525ac60a6525d4b66838ddc7f01448c256d7fb 100644
 --- a/crates/tinybox-module/tests/module_e2e.rs
 +++ b/crates/tinybox-module/tests/module_e2e.rs
 @@ -666,6 +666,7 @@ async fn verify_native_jail(
@@ -1629,7 +1730,7 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
          allow_net: true,
          allow_subprocess: true,
          enforcement: JailEnforcement::Enforced,
-@@ -802,6 +803,7 @@ async fn verify_docker_rejects_local_jail(
+@@ -803,6 +804,7 @@ async fn verify_docker_rejects_local_jail(
                  NativeJailConfig {
                      read_only: Vec::new(),
                      read_write: Vec::new(),
@@ -1639,10 +1740,10 @@ index ef5d493e2725add382bbb893203d20d43118010d..344a81870e59ed73ec036fbdb4963e5f
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..46cbb061fc5a504d550118498ff64b0b0d239b8b
+index 0000000000000000000000000000000000000000..32d5f5832000062c48a0a7fa8504ed60d2fcdb84
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,853 @@
+@@ -0,0 +1,854 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -1971,7 +2072,7 @@ index 0000000000000000000000000000000000000000..46cbb061fc5a504d550118498ff64b0b
 +    )?;
 +
 +    let capabilities: tinybox_bus::ModuleCapabilities = proxy.call("Capabilities", ()).await?;
-+    assert_eq!(capabilities.contract_version, (1, 20));
++    assert_eq!(capabilities.contract_version, (1, 22));
 +    match mode {
 +        "utf8" => {
 +            let grants = resolve_grants(&proxy, &home, false).await?;
@@ -2290,6 +2391,7 @@ index 0000000000000000000000000000000000000000..46cbb061fc5a504d550118498ff64b0b
 +        read_only,
 +        read_write: grants.read_write.clone(),
 +        unix_paths: grants.unix_paths.clone(),
++        deny_read: Vec::new(),
 +        allow_net: true,
 +        allow_subprocess: true,
 +        enforcement: tinybox_bus::JailEnforcement::Enforced,
@@ -2497,7 +2599,7 @@ index 0000000000000000000000000000000000000000..46cbb061fc5a504d550118498ff64b0b
 +    Ok(())
 +}
 diff --git a/docs/plans/local-grants.md b/docs/plans/local-grants.md
-index badca58b88ebcf10478e3df949833fe63509a02d..3063935878a173dcc2d9d10e228a8dedf8316a5a 100644
+index badca58b88ebcf10478e3df949833fe63509a02d..df1b0a54243084e6edfa7adb16f23c0d45831af3 100644
 --- a/docs/plans/local-grants.md
 +++ b/docs/plans/local-grants.md
 @@ -25,3 +25,24 @@ and verification for the existing discovery slice.
@@ -2505,7 +2607,7 @@ index badca58b88ebcf10478e3df949833fe63509a02d..3063935878a173dcc2d9d10e228a8ded
  Execution, released-module consumption and OpenHuman adapters are subsequent
  slices and are not represented as delivered by this prerequisite.
 +
-+## Custom Rust homes and Unix grant transport (contract 1.20)
++## Custom Rust homes and Unix grant transport (contract 1.22)
 +
 +1. Reproduce custom UTF8 and Unix-byte Rust home discovery failures against
 +   untouched production using subprocess-seeded public API tests. Reproduce
@@ -2526,7 +2628,7 @@ index badca58b88ebcf10478e3df949833fe63509a02d..3063935878a173dcc2d9d10e228a8ded
 +   candidate. Publish the reviewed upstream contribution from Sayr.
 +7. Integrate OpenHuman after the accepted TinyBox module release is available.
 diff --git a/docs/plans/native-shell-execution.md b/docs/plans/native-shell-execution.md
-index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..aa28da49b6019b16bedf67c20728ad5d29345e65 100644
+index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..65bb339b55eb1922076d59278601af89761fefb4 100644
 --- a/docs/plans/native-shell-execution.md
 +++ b/docs/plans/native-shell-execution.md
 @@ -18,3 +18,19 @@
@@ -2544,13 +2646,13 @@ index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..aa28da49b6019b16bedf67c20728ad5d
 +3. Verify the actual shell child sees exact OS bytes, empty homes are unset,
 +   approved overrides win and unrelated ambient names stay excluded.
 +4. Verify the same behavior through a compiled production-admitted module and
-+   Linux confinement using the grants from contract 1.20.
++   Linux confinement using the grants from contract 1.22.
 +
 +5. On macOS, verify byte-exact shell values for invalid UTF8 home names whose
 +   creation fails with EILSEQ, and require discovery to omit unavailable paths.
 +   Retain actual byte-named directories and confinement checks on Linux.
 diff --git a/docs/specs/local-grants.md b/docs/specs/local-grants.md
-index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..3aa86eb7a5b85299af6b94384e3a2277213c76d6 100644
+index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..e949022908fc589b53e1685bba2e819c105a1fc2 100644
 --- a/docs/specs/local-grants.md
 +++ b/docs/specs/local-grants.md
 @@ -29,7 +29,8 @@ supported escapes and unquoted comments preserve Git pathname semantics.
@@ -2558,21 +2660,23 @@ index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..3aa86eb7a5b85299af6b94384e3a2277
  UnsupportedOperation instead of incomplete grants.
  
 -The bus rejects non-UTF-8 targets and more than 64 input or final grants.
-+The default bus request rejects non-UTF-8 targets. Contract 1.20 callers can
++The default bus request rejects non-UTF-8 targets. Contract 1.22 callers can
 +opt into raw Unix path grants. The combined grant limit remains 64.
  Missing/protected individual paths are omitted. Discovery is a snapshot; hosts
  must prevent later protected entries or concurrent tree mutation. No kernel deny
  rule for future credential filenames is claimed.
-@@ -38,3 +39,9 @@ Acceptance: behavioral regressions cover every floor and include correction;
+@@ -38,3 +39,11 @@ Acceptance: behavioral regressions cover every floor and include correction;
  the actual dynamic artifact passes production manifest admission and discovery,
  including explicit refusal of unsupported include expansions. No implementation
  crate is needed by a host. Execution and host adapters remain separate work.
 +
-+## Custom Rust homes and Unix grant transport (contract 1.20)
++## Custom Rust homes and Unix grant transport (contract 1.22)
 +
 +Existing absolute nonempty RUSTUP_HOME and CARGO_HOME paths are discovered on the module machine as OS paths. Defaults remain admitted by current toolchain policy. Rustup and selected Cargo bin/config/env/registry/git entries are read-only; credential floors and fixed-state alias protections apply to every selected root. Missing or invalid configured roots are skipped; discovery creates no directories.
 +
 +Callers opt into allow_unix_paths to receive non-UTF8 canonical Unix paths in an additive unix_paths grant group (raw byte vectors). UTF8 grants retain their established string representation. The same group can be supplied in native jail configuration after host approval. Empty optional groups preserve previous wire payloads. Module decoding rejects NUL, relative paths, parent traversal, oversized paths, unsupported platforms and combined grant counts above the established limit. Hosts require the new contract before sending byte grants and retain protected-path admission.
++
++Native jail admission applies the upstream `deny_read` checks after combining UTF8 and Unix-byte grants. Denials participate in the same 64-entry limit as both grant representations. A denial over a writable byte grant is refused; a denial inside a byte grant requires a backend that carves denials, following the existing string-grant policy.
 diff --git a/docs/specs/native-shell-execution.md b/docs/specs/native-shell-execution.md
 index 1f45941cfdcbc74c9355e71946d559ac59e8f03b..7586a425c8e000b9c1c839e3a4568c7037df1d36 100644
 --- a/docs/specs/native-shell-execution.md

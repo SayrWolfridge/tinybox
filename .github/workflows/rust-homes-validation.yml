@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: tinyhumansai/tinybox
-          ref: 'bcea8a774a7c00f30384611727a0ef74c0bc505c'
+          ref: '39fe22189431bdf787dafce5eea6d7d49d1a00f8'
           path: source
           persist-credentials: false
           submodules: recursive
@@ -96,7 +96,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: tinyhumansai/tinybox
-          ref: 'bcea8a774a7c00f30384611727a0ef74c0bc505c'
+          ref: '39fe22189431bdf787dafce5eea6d7d49d1a00f8'
           path: source
           persist-credentials: false
           submodules: recursive
@@ -140,7 +140,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: tinyhumansai/tinybox
-          ref: 'bcea8a774a7c00f30384611727a0ef74c0bc505c'
+          ref: '39fe22189431bdf787dafce5eea6d7d49d1a00f8'
           path: source
           persist-credentials: false
           submodules: recursive
