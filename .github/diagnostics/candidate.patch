@@ -1210,7 +1210,7 @@ index be000af1ca30a81b1ac460756fd179670d7842e0..f99f96f6051dfd861acddbac3bdb94db
      paths
          .iter()
 diff --git a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
-index d6e83b7d38224afee2c73074e0030a14dbb13a97..9a5403f796438654540da02b583efc44f4b24d87 100644
+index d6e83b7d38224afee2c73074e0030a14dbb13a97..0d105386e39fbf9c56424e17f007f77c0b9a4520 100644
 --- a/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
 +++ b/crates/tinybox-module/src/tinybus_module/native_jail_tests.rs
 @@ -42,6 +42,7 @@ fn config() -> NativeJailConfig {
@@ -1324,12 +1324,19 @@ index d6e83b7d38224afee2c73074e0030a14dbb13a97..9a5403f796438654540da02b583efc44
      assert!(!jail.allow_net && !jail.allow_subprocess);
      config.require_process_isolation = true;
      assert!(prepare(root.path(), &config, &command, &backend).is_err());
-@@ -247,6 +330,18 @@ fn denials_are_canonicalized_and_refused_where_a_backend_cannot_keep_them()
+@@ -208,6 +291,7 @@ fn declared_enforcement_rejects_each_unsupported_requested_constraint()
+ #[test]
+ fn denials_are_canonicalized_and_refused_where_a_backend_cannot_keep_them()
+ -> std::result::Result<(), Box<dyn std::error::Error>> {
++    use std::os::unix::ffi::OsStrExt;
+     let home = tempfile::tempdir()?;
+     let root = home.path().join("project");
+     let secrets = home.path().join(".ssh");
+@@ -247,6 +331,17 @@ fn denials_are_canonicalized_and_refused_where_a_backend_cannot_keep_them()
      assert_eq!(jail.deny_read.len(), 2);
      config.read_only.clear();
  
 +    // Byte grants follow the same backend denial policy after decoding.
-+    use std::os::unix::ffi::OsStrExt;
 +    config.unix_paths.read_only = vec![home.path().as_os_str().as_bytes().to_vec()];
 +    assert!(prepare(&root, &config, &command, &backend("fixture")).is_err());
 +    let jail = prepare(&root, &config, &command, &backend("seatbelt"))?;
