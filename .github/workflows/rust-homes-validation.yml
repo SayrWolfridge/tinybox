@@ -1,4 +1,4 @@
-name: TinyBox grant scan diagnosis
+name: TinyBox Rust homes validation
 on:
   push:
     branches: [sayr/rust-homes-validation]
@@ -13,7 +13,7 @@ env:
 jobs:
   validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -46,16 +46,128 @@ jobs:
           cp ../diagnostic/.github/diagnostics/candidate.patch ../evidence/
           git diff --check
           rustc -vV > ../evidence/rustc-version.txt
-      - name: Trace host grant scans in focused compiled-module regression
+      - name: Canonical supply-chain audit
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa
+        with:
+          manifest-path: source/Cargo.toml
+      - name: Canonical formatter and Clippy
         working-directory: source
         run: |
           set -euo pipefail
-          python3 ../diagnostic/.github/diagnostics/trace-grant-scan.py
-          git diff -- crates/tinybox-jail/src/grants/mod.rs crates/tinybox-module/src/tinybus_module/mod.rs > ../evidence/diagnostic-overlay.diff
-          cargo test --locked -p tinybox-module --test rust_homes_manifest_e2e -- --nocapture --test-threads=1 2>&1 | tee ../evidence/scan-diagnostic.log
+          cargo fmt --all -- --check 2>&1 | tee ../evidence/fmt.log
+          cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee ../evidence/clippy.log
+      - name: Focused dynamic module Rust homes regression
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo test --locked -p tinybox-module --test rust_homes_manifest_e2e -- --nocapture --test-threads=1 2>&1 | tee ../evidence/rust-homes-manifest.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;' ../evidence/rust-homes-manifest.log
+      - name: Canonical build and tests
+        working-directory: source
+        run: |
+          set -euo pipefail
+          cargo build --all-targets --all-features 2>&1 | tee ../evidence/build.log
+          cargo test --all-features 2>&1 | tee ../evidence/test.log
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed;' ../evidence/test.log
+      - name: Canonical module package E2E
+        working-directory: source
+        run: |
+          set -euo pipefail
+          bash scripts/test-e2e.sh 2>&1 | tee ../evidence/module-package-e2e.log
+      - name: Verify exact source after execution
+        working-directory: source
+        if: always()
+        run: sha256sum -c ../diagnostic/.github/diagnostics/source-hashes.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: tinybox-scan-diagnostic
+          name: tinybox-native-validation
+          path: evidence
+          retention-days: 30
+  coverage:
+    needs: validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: diagnostic
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tinyhumansai/tinybox
+          ref: '39fe22189431bdf787dafce5eea6d7d49d1a00f8'
+          path: source
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@70b10d055da4af0e46b2f7166e710204993798b3
+        with:
+          tool: cargo-llvm-cov
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: source
+          shared-key: tinybox-coverage-rust-homes
+      - name: Exact candidate per-file coverage
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p ../evidence
+          git apply ../diagnostic/.github/diagnostics/candidate.patch
+          sha256sum -c ../diagnostic/.github/diagnostics/source-hashes.txt
+          bash scripts/check-coverage.sh 2>&1 | tee ../evidence/coverage.log
+          cp coverage.json ../evidence/
+          sha256sum -c ../diagnostic/.github/diagnostics/source-hashes.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: tinybox-coverage-validation
+          path: |
+            evidence
+            source/coverage.json
+          retention-days: 30
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: diagnostic
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tinyhumansai/tinybox
+          ref: '39fe22189431bdf787dafce5eea6d7d49d1a00f8'
+          path: source
+          persist-credentials: false
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: source
+          shared-key: tinybox-macos-rust-homes
+      - name: Exact candidate macOS regression and feature matrix
+        working-directory: source
+        run: |
+          set -euo pipefail
+          mkdir -p ../evidence
+          git apply ../diagnostic/.github/diagnostics/candidate.patch
+          shasum -a 256 -c ../diagnostic/.github/diagnostics/source-hashes.txt | tee ../evidence/source-hash-check.log
+          cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee ../evidence/clippy.log
+          cargo test --locked -p tinybox-jail --test toolchain_homes -- --nocapture --test-threads=1 2>&1 | tee ../evidence/grants.log
+          cargo test --locked -p tinybox-module --lib -- native_jail::tests --nocapture --test-threads=1 2>&1 | tee ../evidence/native-jail.log
+          cargo test --locked -p tinybox-module --lib -- unix_toolchain_environment_is_preserved_for_the_shell_child --nocapture --test-threads=1 2>&1 | tee ../evidence/env.log
+          cargo test --locked -p tinybox-module --test rust_homes_manifest_e2e -- --nocapture --test-threads=1 2>&1 | tee ../evidence/manifest.log
+          bash scripts/test-features.sh 2>&1 | tee ../evidence/features.log
+          shasum -a 256 -c ../diagnostic/.github/diagnostics/source-hashes.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: tinybox-macos-validation
           path: evidence
           retention-days: 30

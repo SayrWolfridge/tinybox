@@ -1747,10 +1747,10 @@ index 8fb6eaf30b946ccfbd0b067dfac5c1f391c3fc5a..52525ac60a6525d4b66838ddc7f01448
                      enforcement: JailEnforcement::Declared,
 diff --git a/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
 new file mode 100644
-index 0000000000000000000000000000000000000000..32d5f5832000062c48a0a7fa8504ed60d2fcdb84
+index 0000000000000000000000000000000000000000..c85c9aee1cfd13366eb62d6e8fa85887f8cbb646
 --- /dev/null
 +++ b/crates/tinybox-module/tests/rust_homes_manifest_e2e.rs
-@@ -0,0 +1,854 @@
+@@ -0,0 +1,868 @@
 +//! Compiled-module proof for custom Rust homes, grant transport, and local execution.
 +
 +use std::{
@@ -2151,6 +2151,8 @@ index 0000000000000000000000000000000000000000..32d5f5832000062c48a0a7fa8504ed60
 +        },
 +        protected: tinybox_bus::ProtectedPaths {
 +            components: vec!["credentials.toml".into()],
++            // Keep discovery focused on custom homes instead of runner tool caches.
++            prefixes: vec!["/usr/local".into(), "/opt".into()],
 +            ..tinybox_bus::ProtectedPaths::default()
 +        },
 +        allow_unix_paths,
@@ -2162,14 +2164,26 @@ index 0000000000000000000000000000000000000000..32d5f5832000062c48a0a7fa8504ed60
 +    home: &Path,
 +    allow_unix_paths: bool,
 +) -> TestResult<tinybox_bus::LocalGrants> {
-+    Ok(proxy
++    let grants: tinybox_bus::LocalGrants = proxy
 +        .clone()
 +        .with_timeout(GRANT_SCAN_TIMEOUT)
 +        .call(
 +            "ResolveLocalGrants",
 +            (grant_request(home, allow_unix_paths)?,),
 +        )
-+        .await?)
++        .await?;
++    for root in ["/usr/local", "/opt"] {
++        if let Ok(canonical) = Path::new(root).canonicalize() {
++            assert!(
++                !grants
++                    .read_only
++                    .iter()
++                    .any(|grant| Path::new(grant).starts_with(&canonical)),
++                "fixture-disallowed system toolchain root was admitted: {root}"
++            );
++        }
++    }
++    Ok(grants)
 +}
 +
 +#[cfg(target_os = "macos")]
@@ -2606,10 +2620,10 @@ index 0000000000000000000000000000000000000000..32d5f5832000062c48a0a7fa8504ed60
 +    Ok(())
 +}
 diff --git a/docs/plans/local-grants.md b/docs/plans/local-grants.md
-index badca58b88ebcf10478e3df949833fe63509a02d..df1b0a54243084e6edfa7adb16f23c0d45831af3 100644
+index badca58b88ebcf10478e3df949833fe63509a02d..1e38bfcf5f9ffb50411dbf66fcf172292b039396 100644
 --- a/docs/plans/local-grants.md
 +++ b/docs/plans/local-grants.md
-@@ -25,3 +25,24 @@ and verification for the existing discovery slice.
+@@ -25,3 +25,26 @@ and verification for the existing discovery slice.
  Discovery implementation is complete subject to review and recorded validation.
  Execution, released-module consumption and OpenHuman adapters are subsequent
  slices and are not represented as delivered by this prerequisite.
@@ -2628,6 +2642,8 @@ index badca58b88ebcf10478e3df949833fe63509a02d..df1b0a54243084e6edfa7adb16f23c0d
 +   wire compatibility, malformed paths, combined bounds and approved flags.
 +5. Exercise the production-admitted dynamic module with UTF8 and Unix-byte
 +   homes, actual Cargo/Rust commands and Linux filesystem confinement.
++   Supply protected prefixes for unrelated system toolchain roots and assert
++   their omission so host directory contents stay outside these fixtures.
 +   On macOS, assert the filesystem rejects invalid UTF8 names with EILSEQ and
 +   discovery omits those unavailable homes; preserve byte-exact shell values.
 +   On Unix filesystems accepting these names, assert actual byte-path grants.
@@ -2659,7 +2675,7 @@ index 0dbafc9aecdbb8081ba8bed40238ac1a488d9be0..65bb339b55eb1922076d59278601af89
 +   creation fails with EILSEQ, and require discovery to omit unavailable paths.
 +   Retain actual byte-named directories and confinement checks on Linux.
 diff --git a/docs/specs/local-grants.md b/docs/specs/local-grants.md
-index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..e949022908fc589b53e1685bba2e819c105a1fc2 100644
+index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..587e8bc077005d86b9ecf250fa96f39987dbe84c 100644
 --- a/docs/specs/local-grants.md
 +++ b/docs/specs/local-grants.md
 @@ -29,7 +29,8 @@ supported escapes and unquoted comments preserve Git pathname semantics.
@@ -2672,7 +2688,7 @@ index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..e949022908fc589b53e1685bba2e819c
  Missing/protected individual paths are omitted. Discovery is a snapshot; hosts
  must prevent later protected entries or concurrent tree mutation. No kernel deny
  rule for future credential filenames is claimed.
-@@ -38,3 +39,11 @@ Acceptance: behavioral regressions cover every floor and include correction;
+@@ -38,3 +39,16 @@ Acceptance: behavioral regressions cover every floor and include correction;
  the actual dynamic artifact passes production manifest admission and discovery,
  including explicit refusal of unsupported include expansions. No implementation
  crate is needed by a host. Execution and host adapters remain separate work.
@@ -2684,6 +2700,11 @@ index 07cf7b31aad9e3e4f232865c020ba7d00df27ff9..e949022908fc589b53e1685bba2e819c
 +Callers opt into allow_unix_paths to receive non-UTF8 canonical Unix paths in an additive unix_paths grant group (raw byte vectors). UTF8 grants retain their established string representation. The same group can be supplied in native jail configuration after host approval. Empty optional groups preserve previous wire payloads. Module decoding rejects NUL, relative paths, parent traversal, oversized paths, unsupported platforms and combined grant counts above the established limit. Hosts require the new contract before sending byte grants and retain protected-path admission.
 +
 +Native jail admission applies the upstream `deny_read` checks after combining UTF8 and Unix-byte grants. Denials participate in the same 64-entry limit as both grant representations. A denial over a writable byte grant is refused; a denial inside a byte grant requires a backend that carves denials, following the existing string-grant policy.
++
++The compiled-module custom-home regression supplies protected prefixes for
++`/usr/local` and `/opt`, isolating its selected Rust-home fixtures from host
++system-toolchain directory scans. It asserts those excluded roots are omitted
++and preserves credential-floor, real-tool and kernel-confinement checks.
 diff --git a/docs/specs/native-shell-execution.md b/docs/specs/native-shell-execution.md
 index 1f45941cfdcbc74c9355e71946d559ac59e8f03b..7586a425c8e000b9c1c839e3a4568c7037df1d36 100644
 --- a/docs/specs/native-shell-execution.md
