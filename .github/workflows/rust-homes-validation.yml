@@ -46,10 +46,6 @@ jobs:
           cp ../diagnostic/.github/diagnostics/candidate.patch ../evidence/
           git diff --check
           rustc -vV > ../evidence/rustc-version.txt
-      - name: Canonical supply-chain audit
-        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa
-        with:
-          manifest-path: source/Cargo.toml
       - name: Canonical formatter and Clippy
         working-directory: source
         run: |
@@ -171,3 +167,47 @@ jobs:
           name: tinybox-macos-validation
           path: evidence
           retention-days: 30
+
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: diagnostic
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tinyhumansai/tinybox
+          ref: '39fe22189431bdf787dafce5eea6d7d49d1a00f8'
+          path: source
+          persist-credentials: false
+          submodules: recursive
+      - id: baseline_checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: tinyhumansai/tinybox
+          ref: '39fe22189431bdf787dafce5eea6d7d49d1a00f8'
+          path: baseline
+          persist-credentials: false
+          submodules: recursive
+      - name: Verify exact candidate before audit
+        working-directory: source
+        run: |
+          set -euo pipefail
+          git apply --check ../diagnostic/.github/diagnostics/candidate.patch
+          git apply ../diagnostic/.github/diagnostics/candidate.patch
+          sha256sum -c ../diagnostic/.github/diagnostics/source-hashes.txt
+      - name: Canonical supply-chain audit
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa
+        with:
+          manifest-path: source/Cargo.toml
+      - name: Untouched-base canonical supply-chain reproduction
+        if: ${{ always() && steps.baseline_checkout.outcome == 'success' }}
+        uses: EmbarkStudios/cargo-deny-action@9c67a826e39827395bfa619cd85cb2aaeb43cfaa
+        with:
+          manifest-path: baseline/Cargo.toml
+      - name: Verify exact source after audit
+        if: always()
+        working-directory: source
+        run: sha256sum -c ../diagnostic/.github/diagnostics/source-hashes.txt
